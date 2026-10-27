@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct AddPlaylistView: View {
     private enum Mode: String, CaseIterable, Identifiable {
+        case account = "Compte"
         case link = "Lien"
         case file = "Fichier"
         var id: Self { self }
@@ -17,7 +18,10 @@ struct AddPlaylistView: View {
     @Environment(\.dismiss) private var dismiss
     var onAdded: (Playlist) -> Void
 
-    @State private var mode: Mode = .link
+    @State private var mode: Mode = .account
+    @State private var server = ""
+    @State private var username = ""
+    @State private var password = ""
     @State private var link = ""
     @State private var fileURL: URL?
     @State private var name = ""
@@ -36,6 +40,21 @@ struct AddPlaylistView: View {
 
                 Section {
                     switch mode {
+                    case .account:
+                        TextField("Serveur", text: $server, prompt: Text(verbatim: "http://serveur.com:8080"))
+                            .autocorrectionDisabled()
+                            #if os(iOS)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                        TextField("Utilisateur", text: $username, prompt: Text("Nom d'utilisateur"))
+                            .autocorrectionDisabled()
+                            .textContentType(.username)
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                        SecureField("Mot de passe", text: $password, prompt: Text("Mot de passe"))
+                            .textContentType(.password)
                     case .link:
                         TextField("Lien M3U", text: $link, prompt: Text(verbatim: "http://fournisseur.com/get.php?…"))
                             .autocorrectionDisabled()
@@ -49,9 +68,7 @@ struct AddPlaylistView: View {
                         }
                     }
                 } footer: {
-                    Text(mode == .link
-                         ? "Le lien M3U fourni avec ton abonnement. Il sera rechargé quand tu actualises la playlist."
-                         : "Un fichier .m3u ou .m3u8. Ses chaînes sont copiées dans l'app.")
+                    Text(footer)
                 }
 
                 Section {
@@ -104,8 +121,20 @@ struct AddPlaylistView: View {
         return url
     }
 
+    private var footer: String {
+        switch mode {
+        case .account: "Les identifiants Xtream Codes de ton abonnement. Le mot de passe est rangé dans le trousseau."
+        case .link: "Le lien M3U fourni avec ton abonnement. Il sera rechargé quand tu actualises la playlist."
+        case .file: "Un fichier .m3u ou .m3u8. Ses chaînes sont copiées dans l'app."
+        }
+    }
+
     private var canSubmit: Bool {
-        mode == .link ? remoteURL != nil : fileURL != nil
+        switch mode {
+        case .account: Xtream.serverURL(from: server) != nil && !username.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty
+        case .link: remoteURL != nil
+        case .file: fileURL != nil
+        }
     }
 
     private func add() async {
@@ -117,6 +146,14 @@ struct AddPlaylistView: View {
         do {
             let playlist: Playlist
             switch mode {
+            case .account:
+                guard let serverURL = Xtream.serverURL(from: server) else { return }
+                playlist = try await store.addXtream(
+                    name: customName.isEmpty ? serverURL.host() ?? "Compte" : customName,
+                    server: serverURL,
+                    username: username.trimmingCharacters(in: .whitespaces),
+                    password: password
+                )
             case .link:
                 guard let url = remoteURL else { return }
                 playlist = try await store.addRemote(name: customName.isEmpty ? url.host() ?? "Playlist" : customName, url: url)

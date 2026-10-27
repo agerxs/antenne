@@ -122,3 +122,20 @@ struct StreamURLTests {
         #expect(StreamURL.candidates(for: url) == [url])
     }
 }
+
+struct XtreamTests {
+    @Test func serverInputIsNormalized() {
+        #expect(Xtream.serverURL(from: " line.example.tv:8080 ")?.absoluteString == "http://line.example.tv:8080")
+        #expect(Xtream.serverURL(from: "https://line.example.tv/")?.absoluteString == "https://line.example.tv")
+        #expect(Xtream.serverURL(from: "http://line.example.tv/panel/?x=1")?.absoluteString == "http://line.example.tv/panel")
+        #expect(Xtream.serverURL(from: "ftp://line.example.tv") == nil)
+        #expect(Xtream.serverURL(from: "") == nil)
+    }
+
+    @Test func playlistURLEncodesCredentials() {
+        let server = URL(string: "http://line.example.tv/panel")!
+        let url = Xtream.playlistURL(server: server, username: "a b", password: "p&w=d+1")
+        #expect(url?.absoluteString
+            == "http://line.example.tv/panel/get.php?username=a%20b&password=p%26w%3Dd%2B1&type=m3u_plus&output=m3u8")
+    }
+}

@@ -33,6 +33,8 @@ public struct Playlist: Codable, Hashable, Identifiable, Sendable {
     public enum Source: Codable, Hashable, Sendable {
         case remote(URL)
         case file(name: String)
+        /// Le mot de passe vit dans un `CredentialStore`, jamais dans ce fichier.
+        case xtream(server: URL, username: String)
     }
 
     public var id: UUID
@@ -50,7 +52,9 @@ public struct Playlist: Codable, Hashable, Identifiable, Sendable {
     }
 
     public var isRemote: Bool {
-        if case .remote = source { return true }
-        return false
+        switch source {
+        case .remote, .xtream: true
+        case .file: false
+        }
     }
 }

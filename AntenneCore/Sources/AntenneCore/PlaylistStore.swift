@@ -5,12 +5,16 @@ public enum PlaylistError: LocalizedError, Equatable {
     case empty
     case unreadable
     case http(Int)
+    case missingPassword
+    case keychain(OSStatus)
 
     public var errorDescription: String? {
         switch self {
         case .empty: "Aucune chaîne trouvée dans cette playlist."
         case .unreadable: "Impossible de lire ce fichier."
         case .http(let code): "Le serveur a refusé la playlist (code \(code)). Vérifie le lien ou ton abonnement."
+        case .missingPassword: "Mot de passe introuvable pour ce compte. Supprime-le puis ajoute-le à nouveau."
+        case .keychain(let status): "Impossible d'enregistrer le mot de passe dans le trousseau (\(status))."
         }
     }
 }
@@ -26,14 +30,20 @@ public final class PlaylistStore {
     @ObservationIgnored private var channelCache: [Playlist.ID: [Channel]] = [:]
     @ObservationIgnored private let directory: URL
     @ObservationIgnored private let session: URLSession
+    @ObservationIgnored private let credentials: CredentialStore
 
     nonisolated public static var defaultDirectory: URL {
         URL.applicationSupportDirectory.appending(path: "Antenne", directoryHint: .isDirectory)
     }
 
-    public init(directory: URL = PlaylistStore.defaultDirectory, session: URLSession = .shared) {
+    public init(
+        directory: URL = PlaylistStore.defaultDirectory,
+        session: URLSession = .shared,
+        credentials: CredentialStore = KeychainCredentialStore()
+    ) {
         self.directory = directory
         self.session = session
+        self.credentials = credentials
         try? FileManager.default.createDirectory(at: channelsDirectory, withIntermediateDirectories: true)
         playlists = Self.read([Playlist].self, from: playlistsFile) ?? []
         favorites = Self.read([Channel].self, from: favoritesFile) ?? []
@@ -56,6 +66,17 @@ public final class PlaylistStore {
     }
 
     @discardableResult
+    public func addXtream(name: String, server: URL, username: String, password: String) async throws -> Playlist {
+        guard let url = Xtream.playlistURL(server: server, username: username, password: password) else {
+            throw PlaylistError.unreadable
+        }
+        let channels = try await download(url)
+        let playlist = Playlist(name: name, source: .xtream(server: server, username: username), channelCount: channels.count)
+        try credentials.setPassword(password, for: playlist.id)
+        return try insert(playlist, channels: channels)
+    }
+
+    @discardableResult
     public func addFile(name: String, contentsOf fileURL: URL) async throws -> Playlist {
         let accessing = fileURL.startAccessingSecurityScopedResource()
         defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
@@ -67,9 +88,21 @@ public final class PlaylistStore {
     }
 
     public func refresh(_ id: Playlist.ID) async throws {
-        guard let playlist = playlists.first(where: { $0.id == id }),
-              case .remote(let url) = playlist.source,
-              !refreshing.contains(id) else { return }
+        guard let playlist = playlists.first(where: { $0.id == id }), !refreshing.contains(id) else { return }
+
+        let url: URL
+        switch playlist.source {
+        case .remote(let remote):
+            url = remote
+        case .xtream(let server, let username):
+            guard let password = credentials.password(for: id),
+                  let account = Xtream.playlistURL(server: server, username: username, password: password) else {
+                throw PlaylistError.missingPassword
+            }
+            url = account
+        case .file:
+            return
+        }
 
         refreshing.insert(id)
         defer { refreshing.remove(id) }
@@ -93,6 +126,7 @@ public final class PlaylistStore {
     public func delete(_ id: Playlist.ID) {
         playlists.removeAll { $0.id == id }
         channelCache[id] = nil
+        credentials.removePassword(for: id)
         try? FileManager.default.removeItem(at: channelsFile(id))
         persistPlaylists()
     }
