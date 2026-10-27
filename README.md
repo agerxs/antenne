@@ -38,6 +38,7 @@ Pour un compte Xtream, la recherche porte sur les noms de catégories et les tit
 catégories déjà ouvertes : l'API ne permet pas de chercher dans tout le catalogue sans le
 télécharger (plus de 500 000 entrées chez certains fournisseurs).
 
-Les liens de flux Xtream contiennent identifiant et mot de passe : ils se retrouvent dans le
-cache des réponses et dans les favoris. Les liens M3U ajoutés en mode « Lien » sont stockés en
-JSON dans le conteneur de l'app, pas dans le trousseau.
+Les liens de flux Xtream contiennent identifiant et mot de passe : le cache des réponses n'en
+contient pas (les liens sont reconstruits à la volée), mais une chaîne mise en favori garde le
+sien. Les liens M3U ajoutés en mode « Lien » sont stockés en JSON dans le conteneur de l'app,
+pas dans le trousseau.
