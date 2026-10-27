@@ -7,7 +7,9 @@ Lecteur IPTV pour Mac et iPhone (SwiftUI, une seule cible multiplateforme).
   saisons et épisodes. Mot de passe dans le trousseau.
 - Playlists M3U / M3U8 par lien (actualisables) ou par fichier importé
 - Chaînes avec logos, filtre par groupe, recherche, favoris
-- Lecture avec le lecteur d'Apple (AVKit) : plein écran, Picture in Picture, AirPlay
+- Lecture avec le lecteur d'Apple (AVKit) : plein écran, Picture in Picture, AirPlay ;
+  VLCKit prend le relais pour ce qu'il ne lit pas (MKV, AVI, RTMP…), d'emblée pour ces formats
+  ou après un échec du lecteur d'Apple
 - `#EXTVLCOPT:http-user-agent` respecté ; les flux `.ts` sont retentés en `.m3u8` (Xtream)
 
 ## Structure
@@ -19,7 +21,14 @@ Lecteur IPTV pour Mac et iPhone (SwiftUI, une seule cible multiplateforme).
 
 ## Lancer
 
-Ouvrir `Antenne.xcodeproj`, choisir « My Mac » ou l'iPhone branché, puis Run.
+Après un clone, récupérer VLCKit une fois (≈ 350 Mo depuis download.videolan.org, empreintes
+vérifiées, rangé dans `Vendor/` hors de git) :
+
+```bash
+bash scripts/fetch-vlckit.sh
+```
+
+Puis ouvrir `Antenne.xcodeproj`, choisir « My Mac » ou l'iPhone branché, puis Run.
 La signature est automatique avec l'équipe `GF98TAKX7X`.
 
 Tests du cœur :
@@ -30,9 +39,9 @@ cd AntenneCore && swift test
 
 ## Limites connues
 
-Le lecteur d'Apple ne lit que le HLS (`.m3u8`) et les fichiers MP4/MOV. Le MPEG-TS brut,
-le RTMP et certains codecs (MPEG-2, AC-3 selon l'appareil) échouent avec un message clair.
-Les intégrer demanderait VLCKit.
+Lus par VLC, les flux n'ont ni Picture in Picture ni AirPlay, et les commandes sont réduites
+(lecture/pause, position). VLCKit 3.7.3 pèse l'essentiel de l'app iPhone : 36 Mo installée
+une fois retirées les tranches 32 bits, 96 Mo sans cela.
 
 Pour un compte Xtream, la recherche porte sur les noms de catégories et les titres des
 catégories déjà ouvertes : l'API ne permet pas de chercher dans tout le catalogue sans le

@@ -8,7 +8,7 @@ struct PlayerView: View {
     @State private var model = PlayerModel()
 
     var body: some View {
-        PlatformPlayerView(player: model.player)
+        video
             .background(.black)
             .overlay { statusOverlay }
             .navigationTitle(channel.name)
@@ -29,6 +29,15 @@ struct PlayerView: View {
     }
 
     @ViewBuilder
+    private var video: some View {
+        if model.engine == .vlc, let vlc = model.vlc {
+            VLCPlayerView(playback: vlc)
+        } else {
+            PlatformPlayerView(player: model.player)
+        }
+    }
+
+    @ViewBuilder
     private var statusOverlay: some View {
         switch model.state {
         case .loading:
@@ -42,7 +51,7 @@ struct PlayerView: View {
                     .foregroundStyle(.secondary)
                 Text("Lecture impossible")
                     .font(.headline)
-                Text("Le flux ne répond pas ou son format n'est pas lu par le lecteur d'Apple (MPEG-TS brut, RTMP).")
+                Text("Le flux ne répond pas, ou ni le lecteur d'Apple ni VLC ne savent le lire.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

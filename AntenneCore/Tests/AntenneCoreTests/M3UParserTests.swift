@@ -117,6 +117,15 @@ struct StreamURLTests {
         ])
     }
 
+    @Test func formatsAppleCannotReadGoStraightToVLC() {
+        #expect(StreamURL.needsVLC(URL(string: "http://a.example/series/u/p/9002.mkv")!))
+        #expect(StreamURL.needsVLC(URL(string: "http://a.example/movie/u/p/1.AVI")!))
+        #expect(StreamURL.needsVLC(URL(string: "rtmp://a.example/live/stream")!))
+        #expect(!StreamURL.needsVLC(URL(string: "http://a.example/movie/u/p/1.mp4")!))
+        #expect(!StreamURL.needsVLC(URL(string: "http://a.example/live/u/p/3.m3u8")!))
+        #expect(!StreamURL.needsVLC(URL(string: "http://a.example/live/u/p/3.ts")!))
+    }
+
     @Test func nonHTTPSchemesAreUntouched() {
         let url = URL(string: "rtmp://a.example/live/stream")!
         #expect(StreamURL.candidates(for: url) == [url])

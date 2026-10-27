@@ -1,6 +1,15 @@
 import Foundation
 
 public enum StreamURL {
+    private static let vlcOnlyExtensions: Set<String> = ["mkv", "avi", "flv", "wmv", "webm", "mpg", "mpeg", "divx", "ogv", "vob"]
+    private static let vlcOnlySchemes: Set<String> = ["rtmp", "rtsp", "rtp", "udp", "mms"]
+
+    /// Formats que le lecteur d'Apple ne lit jamais : inutile de l'essayer avant VLC.
+    public static func needsVLC(_ url: URL) -> Bool {
+        vlcOnlySchemes.contains(url.scheme?.lowercased() ?? "")
+            || vlcOnlyExtensions.contains(url.pathExtension.lowercased())
+    }
+
     /// Adresses à essayer dans l'ordre. Le lecteur d'Apple ne lit pas le MPEG-TS brut,
     /// alors que les serveurs Xtream servent presque toujours la même chaîne en HLS (.m3u8).
     public static func candidates(for url: URL) -> [URL] {
