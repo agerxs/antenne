@@ -39,6 +39,8 @@ public final class PlaylistStore {
     @ObservationIgnored private let credentials: CredentialStore
     @ObservationIgnored private let cacheDirectory: URL
     @ObservationIgnored private let cloud: CloudKeyValueStore?
+    /// Journal de la synchronisation (nombres d'éléments seulement, jamais leur contenu).
+    @ObservationIgnored public var onSyncEvent: ((String) -> Void)?
 
     nonisolated public static var defaultDirectory: URL {
         URL.applicationSupportDirectory.appending(path: "Antenne", directoryHint: .isDirectory)
@@ -251,6 +253,9 @@ public final class PlaylistStore {
         let before = library
         var merged = library
         let taken = merged.merge(remote)
+        if !taken.isEmpty || merged.favorites != library.favorites || merged.progress != library.progress {
+            onSyncEvent?("reçu d'iCloud : \(remote.playlists.count) playlist(s), \(remote.favorites.count) favori(s), \(remote.progress.count) position(s) ; \(taken.count) playlist(s) prise(s)")
+        }
         merged.pruneProgress(keeping: Self.progressLimit)
 
         for key in taken {
@@ -305,7 +310,8 @@ public final class PlaylistStore {
         cloud.set(Self.encode(outgoing.playlists), forKey: Self.cloudKeys.playlists)
         cloud.set(Self.encode(outgoing.favorites), forKey: Self.cloudKeys.favorites)
         cloud.set(Self.encode(outgoing.progress), forKey: Self.cloudKeys.progress)
-        _ = cloud.synchronize()
+        let accepted = cloud.synchronize()
+        onSyncEvent?("envoyé vers iCloud : \(outgoing.playlists.count) playlist(s), \(outgoing.favorites.count) favori(s), \(outgoing.progress.count) position(s) ; synchronize=\(accepted)")
     }
 
     /// Ce qui part sur iCloud : tout, sauf les playlists importées d'un fichier.

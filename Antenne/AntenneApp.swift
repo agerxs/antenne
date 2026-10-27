@@ -23,7 +23,15 @@ struct AntenneApp: App {
                 .environment(store)
                 .onReceive(NotificationCenter.default.publisher(
                     for: NSUbiquitousKeyValueStore.didChangeExternallyNotification
-                )) { _ in
+                )) { notification in
+                    SyncLog.write("changement iCloud signalé : \(SyncLog.describe(notification))")
+                    store.pullFromCloud()
+                }
+                .task {
+                    store.onSyncEvent = SyncLog.write
+                    let cloud = NSUbiquitousKeyValueStore.default
+                    let sizes = ["playlists", "favorites", "progress"].map { "\($0) \(cloud.data(forKey: $0)?.count ?? 0) o" }
+                    SyncLog.write("lancement ; compte iCloud \(FileManager.default.ubiquityIdentityToken == nil ? "ABSENT" : "présent") ; contenu local d'iCloud : \(sizes.joined(separator: ", ")) ; synchronize=\(cloud.synchronize())")
                     store.pullFromCloud()
                 }
         }
