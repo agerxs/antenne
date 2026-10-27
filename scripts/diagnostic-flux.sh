@@ -13,7 +13,14 @@ for tool in curl ffprobe python3 perl; do
     command -v "$tool" >/dev/null || { echo "Outil manquant : $tool"; exit 1; }
 done
 
-printf 'Serveur (ex. http://serveur.com:8080) : '; read -r SERVER
+while :; do
+    printf 'Serveur (ex. http://serveur.com:8080) : '; read -r SERVER || exit 1
+    case "$SERVER" in
+        http://?*|https://?*) break ;;
+        *://*) echo "  L'adresse doit commencer par http:// ou https://." ;;
+        ?*) break ;;
+    esac
+done
 printf 'Utilisateur : '; read -r USERNAME
 printf 'Mot de passe : '; read -rs PASSWORD; echo
 case "$SERVER" in *://*) ;; *) SERVER="http://$SERVER" ;; esac
