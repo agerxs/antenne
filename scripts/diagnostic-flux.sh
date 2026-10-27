@@ -6,6 +6,8 @@
 
 set -u
 SAMPLE=${1:-40}
+# Beaucoup de panneaux Xtream coupent la connexion quand l'agent est « curl ».
+AGENT=${AGENT:-"VLC/3.0.21 LibVLC/3.0.21"}
 
 for tool in curl ffprobe python3 perl; do
     command -v "$tool" >/dev/null || { echo "Outil manquant : $tool"; exit 1; }
@@ -28,14 +30,17 @@ with_timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 
 echo
 echo "== Compte"
-curl -s --max-time 15 --get "$SERVER/player_api.php" \
-    --data-urlencode "username=$USERNAME" --data-urlencode "password=$PASSWORD" -o "$WORK/account.json"
+code=$(curl -s -A "$AGENT" --max-time 40 -w '%{http_code}' --get "$SERVER/player_api.php" \
+    --data-urlencode "username=$USERNAME" --data-urlencode "password=$PASSWORD" -o "$WORK/account.json")
+echo "(HTTP $code)"
 python3 -I - "$WORK/account.json" <<'PY'
 import json, sys, datetime
 try:
     info = json.load(open(sys.argv[1])).get("user_info", {})
 except Exception:
-    print("Réponse illisible : serveur ou identifiants incorrects ?"); sys.exit()
+    print("Réponse illisible (vide ou pas du JSON) : serveur injoignable ou trop lent."); sys.exit()
+if info.get("auth") == 0:
+    print("Identifiants refusés par le serveur."); sys.exit()
 exp = info.get("exp_date")
 exp = datetime.datetime.fromtimestamp(int(exp)).strftime("%d/%m/%Y %H:%M") if exp else "?"
 print(f"statut : {info.get('status', '?')} | essai : {info.get('is_trial', '?')} | expire : {exp}")
@@ -44,8 +49,8 @@ print(f"formats autorisés : {', '.join(info.get('allowed_output_formats', [])) 
 PY
 
 echo
-echo "== Playlist (mêmes paramètres que l'app : m3u_plus, sortie m3u8)"
-curl -s --max-time 60 --get "$SERVER/get.php" \
+echo "== Playlist (mêmes paramètres que l'app : m3u_plus, sortie m3u8, jusqu'à 4 min)"
+curl -s -A "$AGENT" --max-time 240 --get "$SERVER/get.php" \
     --data-urlencode "username=$USERNAME" --data-urlencode "password=$PASSWORD" \
     --data-urlencode "type=m3u_plus" --data-urlencode "output=m3u8" -o "$WORK/playlist.m3u"
 
@@ -80,8 +85,8 @@ awk -v total="$TOTAL" -v sample="$SAMPLE" 'BEGIN { step = total / sample; if (st
 ok_apple=0; ok_vlc=0; dead=0; i=0
 while IFS=$'\037' read -r name group url; do
     i=$((i + 1))
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 "$url")
-    probe=$(with_timeout 15 ffprobe -v error -rw_timeout 8000000 \
+    code=$(curl -s -A "$AGENT" -o /dev/null -w '%{http_code}' --max-time 8 "$url")
+    probe=$(with_timeout 25 ffprobe -v error -user_agent "$AGENT" -rw_timeout 10000000 \
         -show_entries stream=codec_type,codec_name -of csv=p=0 -i "$url" 2>"$WORK/err" | sort -u | tr '\n' ' ')
     case "$url" in *.m3u8*) container="HLS" ;; *.ts*) container="TS" ;; *) container="?" ;; esac
 
