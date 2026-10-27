@@ -151,6 +151,42 @@ struct XtreamClientTests {
         #expect(StubProtocol.requestCount(url) == 3)
     }
 
+    @Test func liveChannelsKnowTheirStreamIDButMoviesDoNot() async throws {
+        _ = stub("ids.tv", "&action=get_live_streams&category_id=1", #"[{"name":"Info","stream_id":55}]"#)
+        _ = stub("ids.tv", "&action=get_vod_streams&category_id=1", #"[{"name":"Film","stream_id":56}]"#)
+        let category = XtreamCategory(id: "1", name: "A")
+        #expect(try await client("ids.tv").channels(.live, in: category).first?.streamID == "55")
+        #expect(try await client("ids.tv").channels(.movies, in: category).first?.streamID == nil)
+    }
+
+    @Test func guideDecodesBase64AndDropsFinishedProgrammes() async throws {
+        let now = Int(Date.now.timeIntervalSince1970)
+        func b64(_ text: String) -> String { Data(text.utf8).base64EncodedString() }
+        _ = stub("epg.tv", "&action=get_short_epg&stream_id=55&limit=6", """
+        {"epg_listings":[
+          {"title":"\(b64("Le 20 h"))","description":"\(b64("Journal du soir, édition spéciale."))",
+           "start_timestamp":"\(now + 3600)","stop_timestamp":"\(now + 5400)"},
+          {"title":"\(b64("Fini"))","start_timestamp":"\(now - 7200)","stop_timestamp":"\(now - 3600)"},
+          {"title":"Météo","description":"","start_timestamp":\(now - 600),"stop_timestamp":\(now + 600)},
+          {"title":"\(b64("Sans fin"))","start_timestamp":"\(now)"}
+        ]}
+        """)
+        let channel = Channel(name: "Info", url: URL(string: "http://epg.tv:8080/live/ager/p+w/55.m3u8")!, streamID: "55")
+        let guide = try await client("epg.tv").guide(for: channel)
+
+        #expect(guide.map(\.title) == ["Météo", "Le 20 h"])
+        #expect(guide[0].isOnAir())
+        #expect(guide[0].summary == nil)
+        #expect(guide[1].summary == "Journal du soir, édition spéciale.")
+        #expect(!guide[1].isOnAir())
+        #expect((0.4...0.6).contains(guide[0].progress()))
+    }
+
+    @Test func channelWithoutStreamIDHasNoGuide() async throws {
+        let channel = Channel(name: "M3U", url: URL(string: "http://a.example/1.m3u8")!)
+        #expect(try await client("sans-guide.tv").guide(for: channel).isEmpty)
+    }
+
     @Test func badAnswerIsNotCached() async throws {
         let url = stub("panne.tv", "&action=get_live_categories", "Service Unavailable", status: 503)
         let client = client("panne.tv")

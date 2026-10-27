@@ -78,6 +78,25 @@ public struct XtreamSeriesDetail: Sendable {
     public let seasons: [XtreamSeason]
 }
 
+/// Une émission du guide des programmes.
+public struct EPGProgramme: Identifiable, Hashable, Sendable {
+    public let title: String
+    public let summary: String?
+    public let start: Date
+    public let end: Date
+
+    public var id: String { "\(start.timeIntervalSince1970)-\(title)" }
+
+    public func isOnAir(at date: Date = .now) -> Bool { start <= date && date < end }
+
+    /// Part écoulée de l'émission, de 0 à 1.
+    public func progress(at date: Date = .now) -> Double {
+        let length = end.timeIntervalSince(start)
+        guard length > 0 else { return 0 }
+        return min(max(date.timeIntervalSince(start) / length, 0), 1)
+    }
+}
+
 public struct XtreamAccountInfo: Equatable, Sendable {
     public let status: String
     public let isTrial: Bool
@@ -151,7 +170,8 @@ public struct XtreamClient: Sendable {
                     url: url,
                     logoURL: text(record["stream_icon"]).flatMap(URL.init(string:)),
                     group: category.name,
-                    tvgID: text(record["epg_channel_id"])
+                    tvgID: text(record["epg_channel_id"]),
+                    streamID: kind == .live ? id : nil
                 )
             }
         }
@@ -221,6 +241,27 @@ public struct XtreamClient: Sendable {
                 }
             )
         }
+    }
+
+    /// Émission en cours et suivantes d'une chaîne en direct, triées, sans celles déjà terminées.
+    public func guide(for channel: Channel, limit: Int = 6, forceRefresh: Bool = false) async throws -> [EPGProgramme] {
+        guard let streamID = channel.streamID else { return [] }
+        let extra = [("stream_id", streamID), ("limit", String(limit))]
+        let programmes = try await load(action: "get_short_epg", extra: extra, maxAge: 15 * 60, force: forceRefresh) { json in
+            records((json as? [String: Any])?["epg_listings"] ?? []).compactMap { record -> EPGProgramme? in
+                guard let start = double(record["start_timestamp"]).map(Date.init(timeIntervalSince1970:)),
+                      let end = double(record["stop_timestamp"] ?? record["end_timestamp"]).map(Date.init(timeIntervalSince1970:)),
+                      end > start else { return nil }
+                return EPGProgramme(
+                    title: decodedText(record["title"]) ?? "Programme sans titre",
+                    summary: decodedText(record["description"]),
+                    start: start,
+                    end: end
+                )
+            }
+        }
+        let now = Date.now
+        return programmes.filter { $0.end > now }.sorted { $0.start < $1.start }
     }
 
     public func clearCache() {
@@ -303,6 +344,19 @@ private func text(_ value: Any?) -> String? {
     case let number as NSNumber: number.stringValue
     default: nil
     }
+}
+
+/// Les panneaux Xtream encodent titres et descriptions du guide en base64 (la plupart du temps).
+private func decodedText(_ value: Any?) -> String? {
+    guard let raw = text(value) else { return nil }
+    if raw.count % 4 == 0,
+       let data = Data(base64Encoded: raw),
+       let decoded = String(data: data, encoding: .utf8),
+       !decoded.contains("\u{FFFD}"),
+       decoded.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) || $0 == "\n" }) {
+        return decoded.nilIfBlank
+    }
+    return raw
 }
 
 private func int(_ value: Any?) -> Int? {

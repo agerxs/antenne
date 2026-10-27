@@ -93,7 +93,7 @@ struct PlaylistStoreTests {
         #expect(credentials.password(for: playlist.id) == "s3cr+t")
         #expect(store.xtreamClient(for: playlist.id)?.username == "ager")
 
-        let saved = try String(contentsOf: directory.appending(path: "playlists.json"), encoding: .utf8)
+        let saved = try String(contentsOf: directory.appending(path: "library.json"), encoding: .utf8)
         #expect(!saved.contains("s3cr"))
 
         store.delete(playlist.id)

@@ -89,11 +89,7 @@ struct ContentView: View {
                         XtreamBrowserView(playlist: playlist, client: client, selection: $detailItem)
                             .id(id)
                     } else {
-                        ContentUnavailableView(
-                            "Mot de passe introuvable",
-                            systemImage: "key",
-                            description: Text("Supprime ce compte puis ajoute-le à nouveau.")
-                        )
+                        PasswordPrompt(playlist: playlist)
                     }
                 } else {
                     ChannelListView(
@@ -119,6 +115,45 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("Choisis une playlist", systemImage: "sidebar.left")
             }
+        }
+    }
+}
+
+/// Compte arrivé d'un autre appareil sans son mot de passe (trousseau iCloud désactivé).
+private struct PasswordPrompt: View {
+    @Environment(PlaylistStore.self) private var store
+    let playlist: Playlist
+    @State private var password = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Mot de passe à saisir", systemImage: "key")
+        } description: {
+            Text("Ce compte vient d'un autre appareil, mais son mot de passe n'est pas arrivé ici. Active le trousseau iCloud, ou saisis-le une fois.")
+        } actions: {
+            VStack(spacing: 10) {
+                SecureField("Mot de passe", text: $password)
+                    .textContentType(.password)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 260)
+                    .onSubmit(save)
+                Button("Enregistrer", action: save)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(password.isEmpty)
+                if let errorMessage {
+                    Text(errorMessage).font(.caption).foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard !password.isEmpty else { return }
+        do {
+            try store.setPassword(password, for: playlist.id)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

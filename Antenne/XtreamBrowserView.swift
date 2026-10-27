@@ -83,7 +83,11 @@ struct XtreamBrowserView: View {
                 switch item {
                 case .channel(let channel):
                     NavigationLink(value: DetailItem.channel(channel)) {
-                        ChannelRow(channel: channel, isFavorite: store.isFavorite(channel))
+                        if channel.streamID != nil {
+                            XtreamLiveRow(channel: channel, client: model.client, isFavorite: store.isFavorite(channel))
+                        } else {
+                            ChannelRow(channel: channel, isFavorite: store.isFavorite(channel), progress: store.progress(for: channel))
+                        }
                     }
                     .contextMenu { FavoriteButton(channel: channel) }
                 case .series(let series):

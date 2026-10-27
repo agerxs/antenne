@@ -30,9 +30,10 @@ final class VLCPlayback {
         player.delegate = bridge
     }
 
-    func play(_ url: URL, userAgent: String?) {
+    func play(_ url: URL, userAgent: String?, from position: Double? = nil) {
         let media = VLCMedia(url: url)
         media.addOption(":network-caching=1500")
+        if let position { media.addOption(":start-time=\(Int(position))") }
         if let userAgent { media.addOption(":http-user-agent=\(userAgent)") }
         player.media = media
         update(status: .opening)
@@ -44,7 +45,7 @@ final class VLCPlayback {
     }
 
     func seek(to fraction: Double) {
-        guard player.isSeekable else { return }
+        guard player.isSeekable || fraction == 0 else { return }
         player.position = Float(min(max(fraction, 0), 1))
         position = fraction
     }
@@ -136,7 +137,7 @@ struct VLCPlayerView: View {
             .accessibilityLabel(playback.status == .paused ? "Lecture" : "Pause")
 
             if playback.isSeekable {
-                Text(format(playback.elapsed)).monospacedDigit()
+                Text(timecode(Double(playback.elapsed) / 1000)).monospacedDigit()
                 Slider(
                     value: Binding(get: { scrubbing ?? playback.position }, set: { scrubbing = $0 }),
                     in: 0...1
@@ -146,7 +147,7 @@ struct VLCPlayerView: View {
                         self.scrubbing = nil
                     }
                 }
-                Text(format(playback.duration)).monospacedDigit()
+                Text(timecode(Double(playback.duration) / 1000)).monospacedDigit()
             } else {
                 Text("Direct").font(.caption.weight(.semibold))
                 Spacer()
@@ -166,12 +167,6 @@ struct VLCPlayerView: View {
         .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding()
         .transition(.opacity)
-    }
-
-    private func format(_ milliseconds: Int) -> String {
-        let seconds = max(milliseconds, 0) / 1000
-        let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60)
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 }
 

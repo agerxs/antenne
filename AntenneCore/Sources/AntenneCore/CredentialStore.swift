@@ -8,6 +8,8 @@ public protocol CredentialStore: Sendable {
     func removePassword(for id: Playlist.ID)
 }
 
+/// Trousseau iCloud : le mot de passe suit le compte sur les autres appareils de l'utilisateur,
+/// chiffré par Apple. Sans trousseau iCloud, il reste sur l'appareil.
 public struct KeychainCredentialStore: CredentialStore {
     private let service: String
 
@@ -16,7 +18,33 @@ public struct KeychainCredentialStore: CredentialStore {
     }
 
     public func password(for id: Playlist.ID) -> String? {
-        var query = baseQuery(id)
+        if let password = read(syncedQuery(id)) { return password }
+
+        // Rangé avant la synchronisation : on le déplace dans le trousseau iCloud au passage.
+        guard let legacy = read(legacyQuery(id)) else { return nil }
+        if add(legacy, to: syncedQuery(id, forWriting: true)) == errSecSuccess {
+            SecItemDelete(legacyQuery(id) as CFDictionary)
+        }
+        return legacy
+    }
+
+    public func setPassword(_ password: String, for id: Playlist.ID) throws {
+        removePassword(for: id)
+        var status = add(password, to: syncedQuery(id, forWriting: true))
+        if status != errSecSuccess {
+            // Trousseau iCloud indisponible (droits absents, par exemple) : on garde le mot de passe ici.
+            status = add(password, to: legacyQuery(id))
+        }
+        guard status == errSecSuccess else { throw PlaylistError.keychain(status) }
+    }
+
+    public func removePassword(for id: Playlist.ID) {
+        SecItemDelete(syncedQuery(id) as CFDictionary)
+        SecItemDelete(legacyQuery(id) as CFDictionary)
+    }
+
+    private func read(_ query: [String: Any]) -> String? {
+        var query = query
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
@@ -25,17 +53,25 @@ public struct KeychainCredentialStore: CredentialStore {
         return String(data: data, encoding: .utf8)
     }
 
-    public func setPassword(_ password: String, for id: Playlist.ID) throws {
-        removePassword(for: id)
-        var query = baseQuery(id)
+    private func add(_ password: String, to query: [String: Any]) -> OSStatus {
+        var query = query
         query[kSecValueData as String] = Data(password.utf8)
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw PlaylistError.keychain(status) }
+        return SecItemAdd(query as CFDictionary, nil)
     }
 
-    public func removePassword(for id: Playlist.ID) {
-        SecItemDelete(baseQuery(id) as CFDictionary)
+    private func syncedQuery(_ id: Playlist.ID, forWriting: Bool = false) -> [String: Any] {
+        var query = baseQuery(id)
+        query[kSecAttrSynchronizable as String] = forWriting ? kCFBooleanTrue! : kSecAttrSynchronizableAny
+        #if os(macOS)
+        // Sur Mac, seul le trousseau « protection des données » sait se synchroniser.
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return query
+    }
+
+    private func legacyQuery(_ id: Playlist.ID) -> [String: Any] {
+        baseQuery(id)
     }
 
     private func baseQuery(_ id: Playlist.ID) -> [String: Any] {

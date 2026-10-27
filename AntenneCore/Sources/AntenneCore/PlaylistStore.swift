@@ -16,7 +16,7 @@ public enum PlaylistError: LocalizedError, Equatable {
         case .empty: "Aucune chaîne trouvée dans cette playlist."
         case .unreadable: "Impossible de lire ce fichier."
         case .http(let code): "Le serveur a refusé la playlist (code \(code)). Vérifie le lien ou ton abonnement."
-        case .missingPassword: "Mot de passe introuvable pour ce compte. Supprime-le puis ajoute-le à nouveau."
+        case .missingPassword: "Mot de passe introuvable pour ce compte sur cet appareil."
         case .keychain(let status): "Impossible d'enregistrer le mot de passe dans le trousseau (\(status))."
         case .invalidCredentials: "Utilisateur ou mot de passe refusé par le serveur."
         case .accountInactive(let status): "Ce compte n'est pas actif (statut : \(status))."
@@ -25,19 +25,20 @@ public enum PlaylistError: LocalizedError, Equatable {
     }
 }
 
-/// Playlists, chaînes et favoris, enregistrés en JSON dans Application Support.
+/// Playlists, favoris et positions de lecture. Enregistrés en JSON dans Application Support
+/// et, si un stockage iCloud est fourni, partagés entre les appareils.
 @MainActor
 @Observable
 public final class PlaylistStore {
-    public private(set) var playlists: [Playlist] = []
-    public private(set) var favorites: [Channel] = []
     public private(set) var refreshing: Set<Playlist.ID> = []
+    private var library = Library()
 
     @ObservationIgnored private var channelCache: [Playlist.ID: [Channel]] = [:]
     @ObservationIgnored private let directory: URL
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let credentials: CredentialStore
     @ObservationIgnored private let cacheDirectory: URL
+    @ObservationIgnored private let cloud: CloudKeyValueStore?
 
     nonisolated public static var defaultDirectory: URL {
         URL.applicationSupportDirectory.appending(path: "Antenne", directoryHint: .isDirectory)
@@ -47,35 +48,61 @@ public final class PlaylistStore {
         URL.cachesDirectory.appending(path: "Antenne", directoryHint: .isDirectory)
     }
 
+    static let progressLimit = 300
+
     public init(
         directory: URL = PlaylistStore.defaultDirectory,
         session: URLSession = .shared,
         credentials: CredentialStore = KeychainCredentialStore(),
-        cacheDirectory: URL = PlaylistStore.defaultCacheDirectory
+        cacheDirectory: URL = PlaylistStore.defaultCacheDirectory,
+        cloud: CloudKeyValueStore? = nil
     ) {
         self.directory = directory
         self.session = session
         self.credentials = credentials
         self.cacheDirectory = cacheDirectory
+        self.cloud = cloud
         try? FileManager.default.createDirectory(at: channelsDirectory, withIntermediateDirectories: true)
-        playlists = Self.read([Playlist].self, from: playlistsFile) ?? []
-        favorites = Self.read([Channel].self, from: favoritesFile) ?? []
 
-        // Les comptes passent désormais par l'API : l'ancienne copie de la playlist complète ne sert plus.
+        if let saved = Self.read(Library.self, from: libraryFile) {
+            library = saved
+        } else {
+            library = migrateLegacyFiles()
+            persist()
+        }
+
+        // Les comptes passent par l'API : une ancienne copie de leur playlist complète ne sert plus.
         for playlist in playlists where playlist.isXtream {
             try? FileManager.default.removeItem(at: channelsFile(playlist.id))
         }
+
+        pullFromCloud()
     }
 
-    // MARK: Playlists
+    // MARK: Lecture de l'état
+
+    public var playlists: [Playlist] {
+        library.playlists.values.compactMap(\.value).sorted {
+            ($0.addedAt ?? .distantPast, $0.name) < ($1.addedAt ?? .distantPast, $1.name)
+        }
+    }
+
+    public var favorites: [Channel] {
+        library.favorites.values
+            .compactMap { entry in entry.value.map { (entry.modifiedAt, $0) } }
+            .sorted { $0.0 < $1.0 }
+            .map(\.1)
+    }
 
     public func channels(in id: Playlist.ID) -> [Channel] {
-        guard playlists.contains(where: { $0.id == id }) else { return [] }
+        guard playlist(id) != nil else { return [] }
         if let cached = channelCache[id] { return cached }
         let loaded = Self.read([Channel].self, from: channelsFile(id)) ?? []
         channelCache[id] = loaded
         return loaded
     }
+
+    // MARK: Playlists
 
     @discardableResult
     public func addRemote(name: String, url: URL) async throws -> Playlist {
@@ -91,17 +118,8 @@ public final class PlaylistStore {
 
         let playlist = Playlist(name: name, source: .xtream(server: server, username: username), channelCount: 0)
         try credentials.setPassword(password, for: playlist.id)
-        playlists.append(playlist)
-        persistPlaylists()
+        update(playlist)
         return playlist
-    }
-
-    /// Client du compte, ou nil si ce n'est pas un compte ou que son mot de passe a disparu.
-    public func xtreamClient(for id: Playlist.ID) -> XtreamClient? {
-        guard let playlist = playlists.first(where: { $0.id == id }),
-              case .xtream(let server, let username) = playlist.source,
-              let password = credentials.password(for: id) else { return nil }
-        return XtreamClient(server: server, username: username, password: password, session: session, cacheDirectory: cacheDirectory)
     }
 
     @discardableResult
@@ -115,8 +133,37 @@ public final class PlaylistStore {
         return try insert(Playlist(name: name, source: source, channelCount: channels.count), channels: channels)
     }
 
+    /// Client du compte, ou nil si ce n'est pas un compte ou que son mot de passe manque sur cet appareil.
+    public func xtreamClient(for id: Playlist.ID) -> XtreamClient? {
+        guard let playlist = playlist(id),
+              case .xtream(let server, let username) = playlist.source,
+              let password = credentials.password(for: id) else { return nil }
+        return XtreamClient(server: server, username: username, password: password, session: session, cacheDirectory: cacheDirectory)
+    }
+
+    /// Client du compte d'où vient une chaîne (utile pour un favori, qui ne connaît pas sa playlist).
+    public func xtreamClient(for channel: Channel) -> XtreamClient? {
+        for playlist in playlists {
+            guard case .xtream(let server, let username) = playlist.source,
+                  channel.url.host() == server.host(), channel.url.port == server.port,
+                  channel.url.pathComponents.contains(username) else { continue }
+            return xtreamClient(for: playlist.id)
+        }
+        return nil
+    }
+
+    /// Ressaisie du mot de passe sur un appareil où il n'est pas arrivé (trousseau iCloud désactivé).
+    public func setPassword(_ password: String, for id: Playlist.ID) throws {
+        try credentials.setPassword(password, for: id)
+        touch(id)
+    }
+
+    public func hasPassword(for id: Playlist.ID) -> Bool {
+        credentials.password(for: id) != nil
+    }
+
     public func refresh(_ id: Playlist.ID) async throws {
-        guard let playlist = playlists.first(where: { $0.id == id }), !refreshing.contains(id) else { return }
+        guard let playlist = playlist(id), !refreshing.contains(id) else { return }
 
         let url: URL
         switch playlist.source {
@@ -136,58 +183,195 @@ public final class PlaylistStore {
         defer { refreshing.remove(id) }
 
         let channels = try await download(url)
-        guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+        guard var current = self.playlist(id) else { return }
         try Self.write(channels, to: channelsFile(id))
         channelCache[id] = channels
-        playlists[index].channelCount = channels.count
-        touch(id)
-    }
-
-    private func touch(_ id: Playlist.ID) {
-        guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
-        playlists[index].updatedAt = .now
-        persistPlaylists()
+        current.channelCount = channels.count
+        current.updatedAt = .now
+        update(current, isChange: false)
     }
 
     public func rename(_ id: Playlist.ID, to name: String) {
-        guard let index = playlists.firstIndex(where: { $0.id == id }),
-              let name = name.nilIfBlank else { return }
-        playlists[index].name = name
-        persistPlaylists()
+        guard var playlist = playlist(id), let name = name.nilIfBlank else { return }
+        playlist.name = name
+        update(playlist)
     }
 
     public func delete(_ id: Playlist.ID) {
         xtreamClient(for: id)?.clearCache()
-        playlists.removeAll { $0.id == id }
-        channelCache[id] = nil
         credentials.removePassword(for: id)
-        try? FileManager.default.removeItem(at: channelsFile(id))
-        persistPlaylists()
+        library.playlists[id.uuidString] = .init(value: nil, modifiedAt: .now)
+        removeLocalFiles(of: id)
+        save()
     }
 
     // MARK: Favoris
 
     public func isFavorite(_ channel: Channel) -> Bool {
-        favorites.contains { $0.url == channel.url }
+        library.favorites[channel.syncKey]?.value != nil
     }
 
     public func toggleFavorite(_ channel: Channel) {
-        if isFavorite(channel) {
-            favorites.removeAll { $0.url == channel.url }
-        } else {
-            favorites.append(channel)
+        let isFavorite = isFavorite(channel)
+        library.favorites[channel.syncKey] = .init(value: isFavorite ? nil : channel, modifiedAt: .now)
+        save()
+    }
+
+    // MARK: Reprise de lecture
+
+    public func progress(for channel: Channel) -> PlaybackProgress? {
+        library.progress[channel.syncKey]?.value
+    }
+
+    /// Note où en est un film ou un épisode. Le direct (sans durée) et les extraits sont ignorés.
+    public func recordProgress(_ channel: Channel, position: Double, duration: Double) {
+        guard PlaybackProgress.isTrackable(duration: duration), position.isFinite, position >= 0 else { return }
+        let key = channel.syncKey
+        // Quelques secondes regardées par erreur ne doivent pas créer d'entrée.
+        if library.progress[key]?.value == nil, position < 10 { return }
+        library.progress[key] = .init(value: PlaybackProgress(position: position, duration: duration), modifiedAt: .now)
+        library.pruneProgress(keeping: Self.progressLimit)
+        save()
+    }
+
+    // MARK: iCloud
+
+    private static let cloudKeys = (playlists: "playlists", favorites: "favorites", progress: "progress")
+
+    /// Fusionne ce qu'ont écrit les autres appareils, puis renvoie le résultat sur iCloud.
+    /// À appeler au lancement et à chaque notification de changement d'iCloud ; chaque
+    /// modification locale passe aussi par ici, pour ne jamais écraser un changement venu d'ailleurs.
+    public func pullFromCloud() {
+        guard let cloud else { return }
+        var remote = Library()
+        remote.playlists = Self.decode(cloud.data(forKey: Self.cloudKeys.playlists)) ?? [:]
+        remote.favorites = Self.decode(cloud.data(forKey: Self.cloudKeys.favorites)) ?? [:]
+        remote.progress = Self.decode(cloud.data(forKey: Self.cloudKeys.progress)) ?? [:]
+
+        let before = library
+        var merged = library
+        let taken = merged.merge(remote)
+        merged.pruneProgress(keeping: Self.progressLimit)
+
+        for key in taken {
+            guard let id = UUID(uuidString: key) else { continue }
+            if var incoming = merged.playlists[key]?.value, let local = before.playlists[key]?.value {
+                // Le nombre de chaînes et la date d'actualisation restent propres à cet appareil.
+                incoming.channelCount = local.channelCount
+                incoming.updatedAt = local.updatedAt
+                merged.playlists[key]?.value = incoming
+            } else if merged.playlists[key]?.value == nil {
+                removeLocalFiles(of: id)
+            }
         }
-        try? Self.write(favorites, to: favoritesFile)
+
+        removeDuplicates(in: &merged)
+
+        if merged != library {
+            library = merged
+            persist()
+        }
+        if Self.syncable(library) != remote {
+            push()
+        }
+
+        // Une playlist M3U arrivée d'un autre appareil doit télécharger ses chaînes ici.
+        for key in taken where before.playlists[key]?.value == nil {
+            guard let playlist = library.playlists[key]?.value, case .remote = playlist.source else { continue }
+            Task { try? await refresh(playlist.id) }
+        }
+    }
+
+    /// La même playlist ajoutée séparément sur deux appareils : on garde la plus ancienne, partout
+    /// la même, et le mot de passe suit si cet appareil ne connaissait que l'autre exemplaire.
+    private func removeDuplicates(in library: inout Library) {
+        let live = library.playlists.compactMap { key, entry in entry.value.map { (key, $0) } }
+        for (_, copies) in Dictionary(grouping: live, by: { $0.1.source }) where copies.count > 1 {
+            let ordered = copies.sorted { ($0.1.addedAt ?? .distantPast, $0.0) < ($1.1.addedAt ?? .distantPast, $1.0) }
+            let kept = ordered[0].1
+            for (key, duplicate) in ordered.dropFirst() {
+                if let password = credentials.password(for: duplicate.id), credentials.password(for: kept.id) == nil {
+                    try? credentials.setPassword(password, for: kept.id)
+                }
+                library.playlists[key] = .init(value: nil, modifiedAt: .now)
+                removeLocalFiles(of: duplicate.id)
+            }
+        }
+    }
+
+    private func push() {
+        guard let cloud else { return }
+        let outgoing = Self.syncable(library)
+        cloud.set(Self.encode(outgoing.playlists), forKey: Self.cloudKeys.playlists)
+        cloud.set(Self.encode(outgoing.favorites), forKey: Self.cloudKeys.favorites)
+        cloud.set(Self.encode(outgoing.progress), forKey: Self.cloudKeys.progress)
+        _ = cloud.synchronize()
+    }
+
+    /// Ce qui part sur iCloud : tout, sauf les playlists importées d'un fichier.
+    private static func syncable(_ library: Library) -> Library {
+        var outgoing = library
+        outgoing.playlists = library.playlists.filter { $0.value.value?.isSyncable ?? true }
+        return outgoing
     }
 
     // MARK: Privé
 
+    private func playlist(_ id: Playlist.ID) -> Playlist? {
+        library.playlists[id.uuidString]?.value
+    }
+
+    /// `isChange: false` pour une donnée propre à l'appareil (actualisation) : elle ne doit pas
+    /// l'emporter sur un renommage fait ailleurs.
+    private func update(_ playlist: Playlist, isChange: Bool = true) {
+        let key = playlist.id.uuidString
+        let date = isChange ? Date.now : (library.playlists[key]?.modifiedAt ?? .now)
+        library.playlists[key] = .init(value: playlist, modifiedAt: date)
+        save()
+    }
+
+    private func touch(_ id: Playlist.ID) {
+        guard var playlist = playlist(id) else { return }
+        playlist.updatedAt = .now
+        update(playlist, isChange: false)
+    }
+
     private func insert(_ playlist: Playlist, channels: [Channel]) throws -> Playlist {
         try Self.write(channels, to: channelsFile(playlist.id))
         channelCache[playlist.id] = channels
-        playlists.append(playlist)
-        persistPlaylists()
+        update(playlist)
         return playlist
+    }
+
+    private func removeLocalFiles(of id: Playlist.ID) {
+        channelCache[id] = nil
+        try? FileManager.default.removeItem(at: channelsFile(id))
+    }
+
+    private func save() {
+        persist()
+        pullFromCloud()
+    }
+
+    private func persist() {
+        try? Self.write(library, to: libraryFile)
+    }
+
+    /// Reprend les fichiers d'avant la synchronisation, en gardant l'ordre des playlists et des favoris.
+    private func migrateLegacyFiles() -> Library {
+        var migrated = Library()
+        let legacyPlaylists = Self.read([Playlist].self, from: directory.appending(path: "playlists.json")) ?? []
+        for (index, var playlist) in legacyPlaylists.enumerated() {
+            playlist.addedAt = playlist.addedAt ?? Date(timeIntervalSince1970: Double(index))
+            migrated.playlists[playlist.id.uuidString] = .init(value: playlist, modifiedAt: .distantPast)
+        }
+        let legacyFavorites = Self.read([Channel].self, from: directory.appending(path: "favorites.json")) ?? []
+        for (index, channel) in legacyFavorites.enumerated() {
+            migrated.favorites[channel.syncKey] = .init(value: channel, modifiedAt: Date(timeIntervalSince1970: Double(index)))
+        }
+        try? FileManager.default.removeItem(at: directory.appending(path: "playlists.json"))
+        try? FileManager.default.removeItem(at: directory.appending(path: "favorites.json"))
+        return migrated
     }
 
     private func download(_ url: URL) async throws -> [Channel] {
@@ -206,12 +390,7 @@ public final class PlaylistStore {
         return channels
     }
 
-    private func persistPlaylists() {
-        try? Self.write(playlists, to: playlistsFile)
-    }
-
-    private var playlistsFile: URL { directory.appending(path: "playlists.json") }
-    private var favoritesFile: URL { directory.appending(path: "favorites.json") }
+    private var libraryFile: URL { directory.appending(path: "library.json") }
     private var channelsDirectory: URL { directory.appending(path: "channels", directoryHint: .isDirectory) }
     private func channelsFile(_ id: Playlist.ID) -> URL { channelsDirectory.appending(path: "\(id.uuidString).json") }
 
@@ -222,5 +401,13 @@ public final class PlaylistStore {
 
     private static func write<T: Encodable>(_ value: T, to url: URL) throws {
         try JSONEncoder().encode(value).write(to: url, options: .atomic)
+    }
+
+    private static func decode<T: Decodable>(_ data: Data?) -> T? {
+        data.flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    }
+
+    private static func encode<T: Encodable>(_ value: T) -> Data? {
+        try? JSONEncoder().encode(value)
     }
 }

@@ -18,7 +18,7 @@ struct ChannelListView: View {
         List(selection: $selection) {
             ForEach(visible) { channel in
                 NavigationLink(value: DetailItem.channel(channel)) {
-                    ChannelRow(channel: channel, isFavorite: store.isFavorite(channel))
+                    ChannelRow(channel: channel, isFavorite: store.isFavorite(channel), progress: store.progress(for: channel))
                 }
                 .contextMenu { FavoriteButton(channel: channel) }
                 #if os(iOS)
@@ -93,6 +93,9 @@ struct FavoriteButton: View {
 struct ChannelRow: View {
     let channel: Channel
     let isFavorite: Bool
+    /// Remplace le groupe sous le nom (l'émission en cours d'une chaîne en direct, par exemple).
+    var detail: String? = nil
+    var progress: PlaybackProgress? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -101,11 +104,14 @@ struct ChannelRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(channel.name)
                     .lineLimit(1)
-                if let group = channel.group {
-                    Text(group)
+                if let subtitle = detail ?? channel.group {
+                    Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+                if let progress {
+                    ProgressBadge(progress: progress)
                 }
             }
             Spacer(minLength: 0)
@@ -117,6 +123,23 @@ struct ChannelRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// « Vu », ou la part déjà regardée d'un film ou d'un épisode.
+struct ProgressBadge: View {
+    let progress: PlaybackProgress
+
+    var body: some View {
+        if progress.isFinished {
+            Label("Vu", systemImage: "checkmark")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+        } else {
+            ProgressView(value: progress.fraction)
+                .frame(maxWidth: 120)
+                .accessibilityLabel("Déjà regardé à \(Int(progress.fraction * 100)) %")
+        }
     }
 }
 

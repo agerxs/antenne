@@ -26,15 +26,40 @@ final class PlayerModel {
     @ObservationIgnored private var channel: Channel?
     @ObservationIgnored private var candidates: [URL] = []
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
+    /// Position de reprise, appliquée dès que le flux est prêt.
+    @ObservationIgnored private var startPosition: Double?
 
-    func play(_ channel: Channel) {
+    func play(_ channel: Channel, from position: Double? = nil) {
         stop()
         self.channel = channel
+        startPosition = position
         if StreamURL.needsVLC(channel.url) {
             playWithVLC()
         } else {
             candidates = StreamURL.candidates(for: channel.url)
             playNextCandidate()
+        }
+    }
+
+    /// Position et durée en secondes ; nil pour le direct ou tant que la durée est inconnue.
+    var playbackTime: (position: Double, duration: Double)? {
+        switch engine {
+        case .apple:
+            guard let item = player.currentItem else { return nil }
+            let position = player.currentTime().seconds
+            let duration = item.duration.seconds
+            guard position.isFinite, duration.isFinite, duration > 0 else { return nil }
+            return (position, duration)
+        case .vlc:
+            guard let vlc, vlc.duration > 0 else { return nil }
+            return (Double(vlc.elapsed) / 1000, Double(vlc.duration) / 1000)
+        }
+    }
+
+    func restart() {
+        switch engine {
+        case .apple: player.seek(to: .zero)
+        case .vlc: vlc?.seek(to: 0)
         }
     }
 
@@ -74,7 +99,12 @@ final class PlayerModel {
     private func currentItemStatusChanged() {
         guard engine == .apple, let item = player.currentItem else { return }
         switch item.status {
-        case .readyToPlay: state = .playing
+        case .readyToPlay:
+            if let startPosition {
+                player.seek(to: CMTime(seconds: startPosition, preferredTimescale: 600))
+                self.startPosition = nil
+            }
+            state = .playing
         case .failed: playNextCandidate()
         default: break
         }
@@ -94,6 +124,7 @@ final class PlayerModel {
             case .failed: state = .failed("VLC n'a pas pu lire ce flux non plus.")
             }
         }
-        vlc.play(channel.url, userAgent: channel.userAgent)
+        vlc.play(channel.url, userAgent: channel.userAgent, from: startPosition)
+        startPosition = nil
     }
 }

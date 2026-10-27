@@ -6,11 +6,10 @@ struct PlayerView: View {
     @Environment(PlaylistStore.self) private var store
     let channel: Channel
     @State private var model = PlayerModel()
+    @State private var resumedFrom: Double?
 
     var body: some View {
-        video
-            .background(.black)
-            .overlay { statusOverlay }
+        content
             .navigationTitle(channel.name)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -24,8 +23,73 @@ struct PlayerView: View {
                     }
                 }
             }
-            .task(id: channel.id) { model.play(channel) }
-            .onDisappear { model.stop() }
+            .task(id: channel.id) {
+                let resume = store.progress(for: channel)?.resumePosition
+                resumedFrom = resume
+                model.play(channel, from: resume)
+                // Position notée régulièrement : la reprise marche même après une fermeture brutale.
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(10))
+                    recordProgress()
+                }
+            }
+            .task(id: resumedFrom) {
+                guard resumedFrom != nil else { return }
+                // Une annulation (la vue apparaît deux fois à l'ouverture sur iPhone) ne doit pas
+                // masquer le bandeau avant l'heure.
+                do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                withAnimation { resumedFrom = nil }
+            }
+            .onDisappear {
+                recordProgress()
+                model.stop()
+            }
+    }
+
+    /// Une chaîne en direct d'un compte affiche son guide sous la vidéo.
+    @ViewBuilder
+    private var content: some View {
+        if channel.streamID != nil, let client = store.xtreamClient(for: channel) {
+            VStack(spacing: 0) {
+                screen.aspectRatio(16 / 9, contentMode: .fit)
+                GuidePanel(channel: channel, client: client)
+            }
+        } else {
+            screen
+        }
+    }
+
+    private var screen: some View {
+        video
+            .background(.black)
+            .overlay { statusOverlay }
+            .overlay(alignment: .top) { resumeBanner }
+    }
+
+    private func recordProgress() {
+        guard let time = model.playbackTime else { return }
+        store.recordProgress(channel, position: time.position, duration: time.duration)
+    }
+
+    @ViewBuilder
+    private var resumeBanner: some View {
+        if let resumedFrom, model.state == .playing {
+            HStack(spacing: 14) {
+                Text("Reprise à \(timecode(resumedFrom))")
+                Button("Reprendre au début") {
+                    model.restart()
+                    withAnimation { self.resumedFrom = nil }
+                }
+                .buttonStyle(.borderless)
+                .fontWeight(.semibold)
+            }
+            .font(.callout)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(.regularMaterial, in: Capsule())
+            .padding(.top, 12)
+            .transition(.opacity)
+        }
     }
 
     @ViewBuilder

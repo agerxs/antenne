@@ -68,7 +68,8 @@ struct SeriesDetailView: View {
         Section {
             ForEach(current.episodes) { episode in
                 NavigationLink(value: episode.channel) {
-                    EpisodeRow(episode: episode, isFavorite: store.isFavorite(episode.channel))
+                    EpisodeRow(episode: episode, isFavorite: store.isFavorite(episode.channel),
+                               progress: store.progress(for: episode.channel))
                 }
                 .contextMenu { FavoriteButton(channel: episode.channel) }
             }
@@ -112,6 +113,7 @@ struct SeriesDetailView: View {
 private struct EpisodeRow: View {
     let episode: XtreamEpisode
     let isFavorite: Bool
+    let progress: PlaybackProgress?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -123,6 +125,9 @@ private struct EpisodeRow: View {
                 Text(episode.title).lineLimit(2)
                 if let duration = episode.duration {
                     Text(duration).font(.caption).foregroundStyle(.secondary)
+                }
+                if let progress {
+                    ProgressBadge(progress: progress)
                 }
             }
             Spacer(minLength: 0)
