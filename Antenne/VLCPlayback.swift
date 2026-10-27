@@ -192,14 +192,14 @@ private struct VLCSurface: UIViewRepresentable {
 private struct VLCSurface: NSViewRepresentable {
     let player: VLCMediaPlayer
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.black.cgColor
+    // Sur Mac, VLC n'affiche l'image que dans sa propre vue (une NSView ordinaire reste noire).
+    func makeNSView(context: Context) -> VLCVideoView {
+        let view = VLCVideoView()
+        view.backColor = .black
         player.drawable = view
         return view
     }
 
-    func updateNSView(_ view: NSView, context: Context) {}
+    func updateNSView(_ view: VLCVideoView, context: Context) {}
 }
 #endif

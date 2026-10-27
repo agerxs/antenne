@@ -33,6 +33,12 @@ struct XtreamBrowserView: View {
                         items(in: category)
                     } label: {
                         Text(category.name)
+                            #if os(macOS)
+                            // Sur Mac, seul le triangle ouvre le groupe : le nom doit aussi le faire.
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture { expansion(for: category).wrappedValue.toggle() }
+                            #endif
                     }
                 }
                 if categories.isEmpty {
