@@ -6,7 +6,7 @@ struct ChannelListView: View {
 
     let title: String
     let channels: [Channel]
-    @Binding var selection: Channel?
+    @Binding var selection: DetailItem?
     let emptyTitle: String
     let emptyMessage: String
 
@@ -17,12 +17,12 @@ struct ChannelListView: View {
         let visible = filteredChannels
         List(selection: $selection) {
             ForEach(visible) { channel in
-                NavigationLink(value: channel) {
+                NavigationLink(value: DetailItem.channel(channel)) {
                     ChannelRow(channel: channel, isFavorite: store.isFavorite(channel))
                 }
-                .contextMenu { favoriteButton(for: channel) }
+                .contextMenu { FavoriteButton(channel: channel) }
                 #if os(iOS)
-                .swipeActions(edge: .leading) { favoriteButton(for: channel).tint(.yellow) }
+                .swipeActions(edge: .leading) { FavoriteButton(channel: channel).tint(.yellow) }
                 #endif
             }
         }
@@ -75,9 +75,15 @@ struct ChannelListView: View {
         "\(count.formatted()) \(count > 1 ? "chaînes" : "chaîne")"
     }
 
-    private func favoriteButton(for channel: Channel) -> some View {
+}
+
+struct FavoriteButton: View {
+    @Environment(PlaylistStore.self) private var store
+    let channel: Channel
+
+    var body: some View {
         let isFavorite = store.isFavorite(channel)
-        return Button { store.toggleFavorite(channel) } label: {
+        Button { store.toggleFavorite(channel) } label: {
             Label(isFavorite ? "Retirer des favoris" : "Ajouter aux favoris",
                   systemImage: isFavorite ? "star.slash" : "star")
         }
@@ -114,7 +120,7 @@ struct ChannelRow: View {
     }
 }
 
-private struct ChannelLogo: View {
+struct ChannelLogo: View {
     let url: URL?
     let name: String
 

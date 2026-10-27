@@ -82,36 +82,76 @@ struct PlaylistStoreTests {
         #expect(store.channels(in: playlist.id).last?.name == "Nouvelle")
     }
 
-    @Test func xtreamAccountKeepsPasswordOutOfThePlaylistFile() async throws {
-        let server = try #require(Xtream.serverURL(from: "line.example.tv:8080"))
-        let expected = "http://line.example.tv:8080/get.php?username=ager&password=s3cr%2Bt&type=m3u_plus&output=m3u8"
-        StubProtocol.responses[URL(string: expected)!] = (200, sample)
-        let store = PlaylistStore(directory: directory, session: StubProtocol.session, credentials: credentials)
+    @Test func xtreamAccountIsValidatedWithoutDownloadingThePlaylist() async throws {
+        let server = try #require(Xtream.serverURL(from: "store.example.tv:8080"))
+        let api = "http://store.example.tv:8080/player_api.php?username=ager&password=s3cr%2Bt"
+        StubProtocol.responses[URL(string: api)!] = (200, #"{"user_info":{"auth":1,"status":"Active"}}"#)
+        let store = makeStore()
 
         let playlist = try await store.addXtream(name: "Abonnement", server: server, username: "ager", password: "s3cr+t")
         #expect(playlist.source == .xtream(server: server, username: "ager"))
         #expect(credentials.password(for: playlist.id) == "s3cr+t")
+        #expect(store.xtreamClient(for: playlist.id)?.username == "ager")
 
         let saved = try String(contentsOf: directory.appending(path: "playlists.json"), encoding: .utf8)
         #expect(!saved.contains("s3cr"))
-
-        try await store.refresh(playlist.id)
-        #expect(store.playlists.first?.channelCount == 2)
 
         store.delete(playlist.id)
         #expect(credentials.password(for: playlist.id) == nil)
     }
 
-    @Test func xtreamRefreshWithoutPasswordFails() async throws {
-        let server = try #require(Xtream.serverURL(from: "http://line.example.tv"))
-        StubProtocol.responses[Xtream.playlistURL(server: server, username: "u", password: "p")!] = (200, sample)
-        let store = PlaylistStore(directory: directory, session: StubProtocol.session, credentials: credentials)
+    @Test func xtreamRefusedOrExpiredAccountIsNotAdded() async throws {
+        let server = try #require(Xtream.serverURL(from: "refus.example.tv"))
+        StubProtocol.responses[URL(string: "http://refus.example.tv/player_api.php?username=u&password=faux")!] =
+            (200, #"{"user_info":{"auth":0}}"#)
+        StubProtocol.responses[URL(string: "http://refus.example.tv/player_api.php?username=u&password=vieux")!] =
+            (200, #"{"user_info":{"auth":"1","status":"Expired"}}"#)
+        let store = makeStore()
+
+        await #expect(throws: PlaylistError.invalidCredentials) {
+            try await store.addXtream(name: "A", server: server, username: "u", password: "faux")
+        }
+        await #expect(throws: PlaylistError.accountInactive("Expired")) {
+            try await store.addXtream(name: "A", server: server, username: "u", password: "vieux")
+        }
+        #expect(store.playlists.isEmpty)
+    }
+
+    @Test func xtreamRefreshNeedsThePassword() async throws {
+        let server = try #require(Xtream.serverURL(from: "http://mdp.example.tv"))
+        StubProtocol.responses[URL(string: "http://mdp.example.tv/player_api.php?username=u&password=p")!] =
+            (200, #"{"user_info":{"auth":1,"status":"Active"}}"#)
+        let store = makeStore()
         let playlist = try await store.addXtream(name: "A", server: server, username: "u", password: "p")
 
+        try await store.refresh(playlist.id)
         credentials.removePassword(for: playlist.id)
+        #expect(store.xtreamClient(for: playlist.id) == nil)
         await #expect(throws: PlaylistError.missingPassword) {
             try await store.refresh(playlist.id)
         }
+    }
+
+    @Test func oldFullPlaylistCopyOfAnAccountIsDeletedAtLaunch() throws {
+        let server = try #require(Xtream.serverURL(from: "old.example.tv"))
+        let playlist = Playlist(name: "Ancien", source: .xtream(server: server, username: "u"), channelCount: 591_542)
+        let channels = directory.appending(path: "channels")
+        try FileManager.default.createDirectory(at: channels, withIntermediateDirectories: true)
+        try JSONEncoder().encode([playlist]).write(to: directory.appending(path: "playlists.json"))
+        let oldCopy = channels.appending(path: "\(playlist.id.uuidString).json")
+        try Data("[]".utf8).write(to: oldCopy)
+
+        _ = makeStore()
+        #expect(!FileManager.default.fileExists(atPath: oldCopy.path))
+    }
+
+    private func makeStore() -> PlaylistStore {
+        PlaylistStore(
+            directory: directory,
+            session: StubProtocol.session,
+            credentials: credentials,
+            cacheDirectory: directory.appending(path: "cache")
+        )
     }
 
     @Test func remoteHTTPErrorIsReported() async throws {
@@ -126,7 +166,22 @@ struct PlaylistStoreTests {
 }
 
 final class StubProtocol: URLProtocol {
-    nonisolated(unsafe) static var responses: [URL: (Int, String)] = [:]
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var stored: [URL: (Int, String)] = [:]
+    nonisolated(unsafe) private static var counts: [URL: Int] = [:]
+
+    static var responses: Responses { Responses() }
+
+    struct Responses {
+        subscript(url: URL) -> (Int, String)? {
+            get { StubProtocol.lock.withLock { StubProtocol.stored[url] } }
+            nonmutating set { StubProtocol.lock.withLock { StubProtocol.stored[url] = newValue } }
+        }
+    }
+
+    static func requestCount(_ url: URL) -> Int {
+        lock.withLock { counts[url] ?? 0 }
+    }
 
     static var session: URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -138,12 +193,17 @@ final class StubProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let url = request.url, let (status, body) = Self.responses[url] else {
+        guard let url = request.url else { return }
+        let response = Self.lock.withLock {
+            Self.counts[url, default: 0] += 1
+            return Self.stored[url]
+        }
+        guard let (status, body) = response else {
             client?.urlProtocol(self, didFailWithError: URLError(.fileDoesNotExist))
             return
         }
-        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let http = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }

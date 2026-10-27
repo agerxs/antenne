@@ -57,4 +57,9 @@ public struct Playlist: Codable, Hashable, Identifiable, Sendable {
         case .file: false
         }
     }
+
+    public var isXtream: Bool {
+        if case .xtream = source { return true }
+        return false
+    }
 }

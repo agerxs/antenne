@@ -133,6 +133,9 @@ private struct PlaylistRow: View {
     }
 
     private var summary: String {
+        if case .xtream(_, let username) = playlist.source {
+            return "Compte \(username) · Direct, films, séries"
+        }
         let count = playlist.channelCount.formatted()
         let noun = playlist.channelCount > 1 ? "chaînes" : "chaîne"
         let date = playlist.updatedAt.formatted(.relative(presentation: .named))

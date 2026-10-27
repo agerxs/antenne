@@ -7,6 +7,9 @@ public enum PlaylistError: LocalizedError, Equatable {
     case http(Int)
     case missingPassword
     case keychain(OSStatus)
+    case invalidCredentials
+    case accountInactive(String)
+    case badResponse
 
     public var errorDescription: String? {
         switch self {
@@ -15,6 +18,9 @@ public enum PlaylistError: LocalizedError, Equatable {
         case .http(let code): "Le serveur a refusé la playlist (code \(code)). Vérifie le lien ou ton abonnement."
         case .missingPassword: "Mot de passe introuvable pour ce compte. Supprime-le puis ajoute-le à nouveau."
         case .keychain(let status): "Impossible d'enregistrer le mot de passe dans le trousseau (\(status))."
+        case .invalidCredentials: "Utilisateur ou mot de passe refusé par le serveur."
+        case .accountInactive(let status): "Ce compte n'est pas actif (statut : \(status))."
+        case .badResponse: "Le serveur a répondu quelque chose d'illisible. Vérifie l'adresse du serveur."
         }
     }
 }
@@ -31,22 +37,34 @@ public final class PlaylistStore {
     @ObservationIgnored private let directory: URL
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let credentials: CredentialStore
+    @ObservationIgnored private let cacheDirectory: URL
 
     nonisolated public static var defaultDirectory: URL {
         URL.applicationSupportDirectory.appending(path: "Antenne", directoryHint: .isDirectory)
     }
 
+    nonisolated public static var defaultCacheDirectory: URL {
+        URL.cachesDirectory.appending(path: "Antenne", directoryHint: .isDirectory)
+    }
+
     public init(
         directory: URL = PlaylistStore.defaultDirectory,
         session: URLSession = .shared,
-        credentials: CredentialStore = KeychainCredentialStore()
+        credentials: CredentialStore = KeychainCredentialStore(),
+        cacheDirectory: URL = PlaylistStore.defaultCacheDirectory
     ) {
         self.directory = directory
         self.session = session
         self.credentials = credentials
+        self.cacheDirectory = cacheDirectory
         try? FileManager.default.createDirectory(at: channelsDirectory, withIntermediateDirectories: true)
         playlists = Self.read([Playlist].self, from: playlistsFile) ?? []
         favorites = Self.read([Channel].self, from: favoritesFile) ?? []
+
+        // Les comptes passent désormais par l'API : l'ancienne copie de la playlist complète ne sert plus.
+        for playlist in playlists where playlist.isXtream {
+            try? FileManager.default.removeItem(at: channelsFile(playlist.id))
+        }
     }
 
     // MARK: Playlists
@@ -67,13 +85,23 @@ public final class PlaylistStore {
 
     @discardableResult
     public func addXtream(name: String, server: URL, username: String, password: String) async throws -> Playlist {
-        guard let url = Xtream.playlistURL(server: server, username: username, password: password) else {
-            throw PlaylistError.unreadable
-        }
-        let channels = try await download(url)
-        let playlist = Playlist(name: name, source: .xtream(server: server, username: username), channelCount: channels.count)
+        let client = XtreamClient(server: server, username: username, password: password, session: session, cacheDirectory: cacheDirectory)
+        let account = try await client.accountInfo(forceRefresh: true)
+        guard account.isActive else { throw PlaylistError.accountInactive(account.status) }
+
+        let playlist = Playlist(name: name, source: .xtream(server: server, username: username), channelCount: 0)
         try credentials.setPassword(password, for: playlist.id)
-        return try insert(playlist, channels: channels)
+        playlists.append(playlist)
+        persistPlaylists()
+        return playlist
+    }
+
+    /// Client du compte, ou nil si ce n'est pas un compte ou que son mot de passe a disparu.
+    public func xtreamClient(for id: Playlist.ID) -> XtreamClient? {
+        guard let playlist = playlists.first(where: { $0.id == id }),
+              case .xtream(let server, let username) = playlist.source,
+              let password = credentials.password(for: id) else { return nil }
+        return XtreamClient(server: server, username: username, password: password, session: session, cacheDirectory: cacheDirectory)
     }
 
     @discardableResult
@@ -94,12 +122,12 @@ public final class PlaylistStore {
         switch playlist.source {
         case .remote(let remote):
             url = remote
-        case .xtream(let server, let username):
-            guard let password = credentials.password(for: id),
-                  let account = Xtream.playlistURL(server: server, username: username, password: password) else {
-                throw PlaylistError.missingPassword
-            }
-            url = account
+        case .xtream:
+            // Les listes se rechargent à la demande : vider le cache suffit.
+            guard let client = xtreamClient(for: id) else { throw PlaylistError.missingPassword }
+            client.clearCache()
+            touch(id)
+            return
         case .file:
             return
         }
@@ -112,6 +140,11 @@ public final class PlaylistStore {
         try Self.write(channels, to: channelsFile(id))
         channelCache[id] = channels
         playlists[index].channelCount = channels.count
+        touch(id)
+    }
+
+    private func touch(_ id: Playlist.ID) {
+        guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
         playlists[index].updatedAt = .now
         persistPlaylists()
     }
@@ -124,6 +157,7 @@ public final class PlaylistStore {
     }
 
     public func delete(_ id: Playlist.ID) {
+        xtreamClient(for: id)?.clearCache()
         playlists.removeAll { $0.id == id }
         channelCache[id] = nil
         credentials.removePassword(for: id)
