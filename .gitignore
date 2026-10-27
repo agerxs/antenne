@@ -1,0 +1,7 @@
+build/
+.build/
+AntenneCore/.build/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+.swiftpm/
