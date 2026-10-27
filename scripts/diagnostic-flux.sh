@@ -85,9 +85,20 @@ echo "extensions : $(cut -d$'\037' -f3 "$WORK/channels.tsv" | sed -E 's#\?.*##; 
 echo "types : $(cut -d$'\037' -f3 "$WORK/channels.tsv" | sed -E 's#^[a-zA-Z]+://[^/]+/##' | cut -d/ -f1 | sort | uniq -c | sort -rn | head -4 | awk '{ printf "%s %s  ", $1, $2 }')"
 
 echo
-echo "== Test de $SAMPLE chaînes réparties dans la liste (ferme Antenne et tout autre lecteur avant)"
-awk -v total="$TOTAL" -v sample="$SAMPLE" 'BEGIN { step = total / sample; if (step < 1) step = 1 }
-    NR == int(next_pick) + 1 { print; next_pick += step }' "$WORK/channels.tsv" > "$WORK/sample.tsv"
+# Échantillon réparti par type (live, movie, series…) : les séries écraseraient le reste.
+kind_of() { sed -E 's#^[a-zA-Z]+://[^/]+/##' | cut -d/ -f1; }
+cut -d$'\037' -f3 "$WORK/channels.tsv" | kind_of > "$WORK/kinds.txt"
+paste -d$'\037' "$WORK/channels.tsv" "$WORK/kinds.txt" > "$WORK/typed.tsv"
+KINDS=$(sort "$WORK/kinds.txt" | uniq -c | sort -rn | awk '{ print $2 }' | head -3)
+PER_KIND=$(( (SAMPLE + $(echo "$KINDS" | wc -l) - 1) / $(echo "$KINDS" | wc -l) ))
+: > "$WORK/sample.tsv"
+for kind in $KINDS; do
+    awk -F$'\037' -v k="$kind" '$4 == k' "$WORK/typed.tsv" > "$WORK/kind.tsv"
+    count=$(wc -l < "$WORK/kind.tsv" | tr -d ' ')
+    awk -v total="$count" -v sample="$PER_KIND" 'BEGIN { step = total / sample; if (step < 1) step = 1 }
+        NR == int(next_pick) + 1 { print; next_pick += step }' "$WORK/kind.tsv" | cut -d$'\037' -f1-3 >> "$WORK/sample.tsv"
+done
+echo "== Test d'environ $SAMPLE entrées, réparties entre : $(echo $KINDS) (ferme Antenne et tout autre lecteur avant)"
 
 ok_apple=0; ok_vlc=0; dead=0; i=0
 while IFS=$'\037' read -r name group url; do
@@ -95,7 +106,11 @@ while IFS=$'\037' read -r name group url; do
     code=$(curl -s -A "$AGENT" -o /dev/null -w '%{http_code}' --max-time 8 "$url")
     probe=$(with_timeout 25 ffprobe -v error -user_agent "$AGENT" -rw_timeout 10000000 \
         -show_entries stream=codec_type,codec_name -of csv=p=0 -i "$url" 2>"$WORK/err" | sort -u | tr '\n' ' ')
-    case "$url" in *.m3u8*) container="HLS" ;; *.ts*) container="TS" ;; *) container="?" ;; esac
+    case "${url%%\?*}" in
+        *.m3u8) container="HLS" ;; *.ts) container="TS" ;;
+        *.mp4|*.m4v|*.mov) container="MP4" ;; *.mkv) container="MKV" ;; *.avi) container="AVI" ;;
+        *) container="?" ;;
+    esac
 
     if [ -z "$probe" ]; then
         verdict="ÉCHEC    "; dead=$((dead + 1))
@@ -104,7 +119,7 @@ while IFS=$'\037' read -r name group url; do
         video=$(echo "$probe" | grep -oE '[a-z0-9_]+,video' | cut -d, -f1 | head -1)
         audio=$(echo "$probe" | grep -oE '[a-z0-9_]+,audio' | cut -d, -f1 | head -1)
         detail="$container, vidéo ${video:-aucune}, audio ${audio:-aucun}"
-        if [ "$container" = "HLS" ] && echo "${video:-h264}" | grep -qE '^(h264|hevc)$' \
+        if echo "$container" | grep -qE '^(HLS|MP4)$' && echo "${video:-h264}" | grep -qE '^(h264|hevc)$' \
             && echo "${audio:-aac}" | grep -qE '^(aac|mp3|ac3|eac3)$'; then
             verdict="APPLE OK "; ok_apple=$((ok_apple + 1))
         else
