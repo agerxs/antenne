@@ -1,6 +1,7 @@
 # Antenne
 
-Lecteur IPTV pour Mac et iPhone (SwiftUI, une seule cible multiplateforme).
+Lecteur IPTV pour Mac et iPhone (SwiftUI, une seule cible multiplateforme). L'app ne fournit
+aucune chaîne : elle lit l'abonnement IPTV ou les playlists M3U que vous lui donnez.
 
 - Comptes Xtream Codes (serveur, utilisateur, mot de passe) : Direct, Films et Séries par
   catégorie via `player_api.php`, chargés à l'ouverture et gardés en cache ; fiche série avec
@@ -10,6 +11,12 @@ Lecteur IPTV pour Mac et iPhone (SwiftUI, une seule cible multiplateforme).
 - Lecture avec le lecteur d'Apple (AVKit) : plein écran, Picture in Picture, AirPlay ;
   VLCKit prend le relais pour ce qu'il ne lit pas (MKV, AVI, RTMP…), d'emblée pour ces formats
   ou après un échec du lecteur d'Apple
+- Reprise de lecture des films et épisodes (« Reprendre au début » possible), progression et
+  « Vu » dans les listes
+- Guide des programmes des comptes Xtream : émission en cours dans les listes, guide détaillé
+  sous la vidéo
+- Synchronisation iCloud des playlists, favoris et positions de lecture entre appareils d'un
+  même identifiant Apple ; mot de passe dans le trousseau iCloud
 - `#EXTVLCOPT:http-user-agent` respecté ; les flux `.ts` sont retentés en `.m3u8` (Xtream)
 
 ## Structure
@@ -29,7 +36,19 @@ bash scripts/fetch-vlckit.sh
 ```
 
 Puis ouvrir `Antenne.xcodeproj`, choisir « My Mac » ou l'iPhone branché, puis Run.
-La signature est automatique avec l'équipe `GF98TAKX7X`.
+
+### Compiler avec son propre compte Apple
+
+Le projet est signé avec l'équipe de son auteur (`GF98TAKX7X`). Pour l'installer chez vous
+(Xcode 26, macOS 14 ou iOS 17 minimum) :
+
+1. Dans Xcode, cible **Antenne** → **Signing & Capabilities** : choisir votre équipe
+   (un compte Apple gratuit suffit pour l'iPhone, avec une installation valable 7 jours).
+2. Remplacer l'identifiant `ci.novae.antenne` par le vôtre, par exemple `com.votrenom.antenne` :
+   il est déjà réservé à l'équipe de l'auteur.
+3. La synchronisation iCloud demande un compte Apple Developer payant. Sans lui, retirer la
+   capacité **iCloud** (et, sur Mac, l'entrée `keychain-access-groups` de
+   `Config/Antenne-macOS.entitlements`) : l'app fonctionne alors sans synchronisation.
 
 Tests du cœur :
 
