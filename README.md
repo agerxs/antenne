@@ -1,7 +1,8 @@
 # Antenne
 
-Lecteur IPTV pour Mac et iPhone (SwiftUI, une seule cible multiplateforme). L'app ne fournit
-aucune chaîne : elle lit l'abonnement IPTV ou les playlists M3U que vous lui donnez.
+Lecteur IPTV pour Mac et iPhone (SwiftUI, une seule cible multiplateforme) et pour Android
+(Flutter, dans `antenne_android/`). L'app ne fournit aucune chaîne : elle lit l'abonnement IPTV
+ou les playlists M3U que vous lui donnez.
 
 - Comptes Xtream Codes (serveur, utilisateur, mot de passe) : Direct, Films et Séries par
   catégorie via `player_api.php`, chargés à l'ouverture et gardés en cache ; fiche série avec
@@ -25,6 +26,8 @@ aucune chaîne : elle lit l'abonnement IPTV ou les playlists M3U que vous lui do
 - `AntenneCore/` : paquet Swift testable (parseur M3U, client Xtream, stockage, URL de flux)
 - `scripts/diagnostic-flux.sh` : état d'un compte Xtream et test d'un échantillon de flux avec ffprobe
 - `Config/` : Info.plist (ATS ouvert pour les flux http) et entitlements macOS
+- `antenne_android/` : l'app Android (Flutter)
+- `scripts/app-icon.swift` : dessine l'icône pour iPhone, Mac et Android
 
 ## Lancer
 
@@ -56,6 +59,26 @@ Tests du cœur :
 cd AntenneCore && swift test
 ```
 
+## Android
+
+Mêmes fonctions que sur iPhone : comptes Xtream (Direct, Films, Séries par catégorie, guide des
+programmes), playlists M3U par lien ou fichier, favoris, reprise de lecture. Pas de
+synchronisation. Le mot de passe d'un compte est rangé dans le Keystore Android.
+
+La lecture passe par ExoPlayer (le moteur Android de Google : décodage matériel, HLS, MPEG-TS,
+MP4, MKV) ; mpv prend le relais si ExoPlayer échoue. Android 7 minimum.
+
+Installer l'APK : l'ouvrir sur le téléphone et autoriser l'installation depuis cette source.
+
+Compiler (Flutter 3.38) :
+
+```bash
+cd antenne_android && flutter test && flutter build apk --release
+```
+
+Sans `android/key.properties` (absent du dépôt), l'APK est signé avec la clé de debug de la
+machine : il s'installe, mais ne pourra pas être mis à jour par un APK signé ailleurs.
+
 ## Limites connues
 
 Lus par VLC, les flux n'ont ni Picture in Picture ni AirPlay, et les commandes sont réduites
@@ -70,3 +93,7 @@ Les liens de flux Xtream contiennent identifiant et mot de passe : le cache des 
 contient pas (les liens sont reconstruits à la volée), mais une chaîne mise en favori garde le
 sien. Les liens M3U ajoutés en mode « Lien » sont stockés en JSON dans le conteneur de l'app,
 pas dans le trousseau.
+
+Sur Android, l'APK contient les trois architectures (≈ 90 Mo, dont mpv). Le moteur de secours
+mpv n'a pas pu être vérifié sur l'émulateur, qui ne lui fournit pas de contexte graphique ;
+ExoPlayer, lui, a été vérifié en MP4, MKV et HLS.

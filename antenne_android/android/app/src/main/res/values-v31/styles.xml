@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Écran de lancement d'Android 12 et plus : l'icône sur le bleu nuit de l'app. -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowSplashScreenBackground">@color/night</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/night</item>
+    </style>
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@color/night</item>
+    </style>
+</resources>
