@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../core/library.dart';
 import '../core/models.dart';
 import '../core/xtream.dart';
+import 'device.dart';
 import 'library_scope.dart';
 import 'playback.dart';
 import 'widgets.dart';
@@ -40,6 +41,8 @@ class _PlayerPageState extends State<PlayerPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Sur un téléviseur, la vidéo occupe tout l'écran d'emblée.
+      if (isTelevision) _setFullscreen(true);
       final channel = widget.channel;
       if (channel.isLive) {
         final client = _library.xtreamClientForChannel(channel);
@@ -143,11 +146,14 @@ class _PlayerPageState extends State<PlayerPage> {
       failure: _failure,
       live: widget.channel.isLive,
       fullscreen: _fullscreen,
+      favorite: isFavorite,
       onRetry: _retry,
       onFullscreen: () => _setFullscreen(!_fullscreen),
+      onFavorite: () => toggleFavorite(context, widget.channel),
     );
     return PopScope(
-      canPop: !_fullscreen,
+      // Le retour quitte d'abord le plein écran, sauf sur un téléviseur où il n'y a que lui.
+      canPop: !_fullscreen || isTelevision,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _setFullscreen(false);
       },
@@ -193,8 +199,10 @@ class _Screen extends StatefulWidget {
     required this.failure,
     required this.live,
     required this.fullscreen,
+    required this.favorite,
     required this.onRetry,
     required this.onFullscreen,
+    required this.onFavorite,
   });
 
   final Playback? playback;
@@ -202,8 +210,10 @@ class _Screen extends StatefulWidget {
   final String? failure;
   final bool live;
   final bool fullscreen;
+  final bool favorite;
   final VoidCallback onRetry;
   final VoidCallback onFullscreen;
+  final VoidCallback onFavorite;
 
   @override
   State<_Screen> createState() => _ScreenState();
@@ -213,6 +223,17 @@ class _ScreenState extends State<_Screen> {
   var _controlsVisible = true;
   Timer? _hide;
   double? _scrubbing;
+  Timer? _seekSettle;
+  var _okDown = false;
+  var _okHeld = false;
+
+  static final _okKeys = {
+    LogicalKeyboardKey.select,
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+    LogicalKeyboardKey.space,
+    LogicalKeyboardKey.gameButtonA,
+  };
 
   @override
   void initState() {
@@ -223,6 +244,7 @@ class _ScreenState extends State<_Screen> {
   @override
   void dispose() {
     _hide?.cancel();
+    _seekSettle?.cancel();
     super.dispose();
   }
 
@@ -241,8 +263,87 @@ class _ScreenState extends State<_Screen> {
     if (_controlsVisible) _scheduleHide();
   }
 
+  void _showControls() {
+    setState(() => _controlsVisible = true);
+    _scheduleHide();
+  }
+
+  /// Télécommande et clavier : OK bref lit ou met en pause, OK maintenu met en favori,
+  /// gauche/droite reculent ou avancent de 10 s, haut/bas montrent les commandes.
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey;
+    final playback = widget.playback;
+    if (_okKeys.contains(key)) {
+      switch (event) {
+        case KeyDownEvent():
+          _okDown = true;
+          _okHeld = false;
+        case KeyRepeatEvent():
+          if (_okDown && !_okHeld) {
+            _okHeld = true;
+            widget.onFavorite();
+            _showControls();
+          }
+        case KeyUpEvent():
+          // Le relâchement de l'appui qui a ouvert le lecteur arrive ici : il ne compte pas.
+          if (_okDown && !_okHeld) {
+            if (widget.failure != null || playback?.error != null) {
+              widget.onRetry();
+            } else {
+              playback?.togglePlay();
+              _showControls();
+            }
+          }
+          _okDown = false;
+      }
+      return KeyEventResult.handled;
+    }
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    if (key == LogicalKeyboardKey.mediaPlayPause ||
+        (key == LogicalKeyboardKey.mediaPlay && !(playback?.playing ?? true)) ||
+        (key == LogicalKeyboardKey.mediaPause && (playback?.playing ?? false))) {
+      if (event is KeyDownEvent) playback?.togglePlay();
+      _showControls();
+      return KeyEventResult.handled;
+    }
+    final step = switch (key) {
+      LogicalKeyboardKey.arrowLeft => -10,
+      LogicalKeyboardKey.arrowRight => 10,
+      LogicalKeyboardKey.mediaRewind => -30,
+      LogicalKeyboardKey.mediaFastForward => 30,
+      _ => null,
+    };
+    if (step != null) {
+      if (playback != null) _seekBy(playback, step);
+      _showControls();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
+      _showControls();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// Les appuis répétés s'additionnent : la barre suit la position visée, pas celle déjà atteinte.
+  void _seekBy(Playback playback, int seconds) {
+    final duration = playback.duration.inMilliseconds;
+    if (widget.live || duration <= 0) return;
+    final from = _scrubbing ?? playback.position.inMilliseconds.toDouble();
+    final target = (from + seconds * 1000).clamp(0, duration).toDouble();
+    setState(() => _scrubbing = target);
+    playback.seek(Duration(milliseconds: target.round()));
+    _seekSettle?.cancel();
+    _seekSettle = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _scrubbing = null);
+      _scheduleHide();
+    });
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => Focus(autofocus: true, onKeyEvent: _onKey, child: _video(context));
+
+  Widget _video(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final playback = widget.playback;
     final failure = widget.failure ?? playback?.error;
@@ -327,12 +428,20 @@ class _ScreenState extends State<_Screen> {
             decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(8)),
             child: Text(badge, style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
           ),
-        IconButton(
-          color: Colors.white,
-          tooltip: widget.fullscreen ? 'Quitter le plein écran' : 'Plein écran',
-          icon: Icon(widget.fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
-          onPressed: widget.onFullscreen,
-        ),
+        if (isTelevision) ...[
+          const SizedBox(width: 12),
+          Icon(widget.favorite ? Icons.star : Icons.star_border,
+              size: 18, color: widget.favorite ? const Color(0xFFF7C948) : Colors.white70),
+          const SizedBox(width: 6),
+          const Text('Maintenir OK : favori', style: TextStyle(color: Colors.white70, fontSize: 12)),
+          const SizedBox(width: 12),
+        ] else
+          IconButton(
+            color: Colors.white,
+            tooltip: widget.fullscreen ? 'Quitter le plein écran' : 'Plein écran',
+            icon: Icon(widget.fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
+            onPressed: widget.onFullscreen,
+          ),
       ]),
     );
   }

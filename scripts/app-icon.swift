@@ -144,5 +144,26 @@ if FileManager.default.fileExists(atPath: androidRes.path) {
         <foreground android:drawable="@mipmap/ic_launcher_foreground" />
     </adaptive-icon>
     """.write(to: adaptive.appending(path: "ic_launcher.xml"), atomically: true, encoding: .utf8)
-    print("Icônes Android écrites dans \(androidRes.path)")
+
+    // Bannière de l'accueil Android TV : 320 × 180, le motif à gauche, le nom à droite.
+    let banner = CGContext(data: nil, width: 640, height: 360, bitsPerComponent: 8, bytesPerRow: 0,
+                           space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+    let night = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!, colors: [color(0x111A2E), color(0x22325E)] as CFArray, locations: [0, 1])!
+    banner.drawLinearGradient(night, start: CGPoint(x: 0, y: 360), end: CGPoint(x: 640, y: 0), options: [])
+    banner.saveGState()
+    banner.translateBy(x: 36, y: 40)
+    banner.scaleBy(x: 280.0 / 1024, y: 280.0 / 1024)
+    drawArtwork(in: banner, withBackground: false)
+    banner.restoreGState()
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: banner, flipped: false)
+    NSAttributedString(string: "Antenne", attributes: [
+        .font: NSFont.systemFont(ofSize: 76, weight: .semibold),
+        .foregroundColor: NSColor(srgbRed: 0xF4 / 255, green: 0xF1 / 255, blue: 0xEA / 255, alpha: 1),
+    ]).draw(at: CGPoint(x: 328, y: 136))
+    NSGraphicsContext.current = nil
+    let drawable = androidRes.appending(path: "drawable-xhdpi")
+    try FileManager.default.createDirectory(at: drawable, withIntermediateDirectories: true)
+    try NSBitmapImageRep(cgImage: banner.makeImage()!).representation(using: .png, properties: [:])!
+        .write(to: drawable.appending(path: "banner.png"))
+    print("Icônes et bannière TV Android écrites dans \(androidRes.path)")
 }

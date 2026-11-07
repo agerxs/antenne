@@ -70,6 +70,13 @@ MP4, MKV) ; mpv prend le relais si ExoPlayer échoue. Android 7 minimum.
 
 Installer l'APK : l'ouvrir sur le téléphone et autoriser l'installation depuis cette source.
 
+Le même APK s'installe sur un téléviseur ou un boîtier Android TV, Google TV ou Fire TV (pas
+sur les Samsung Tizen ni les LG webOS, qui ne lisent pas les APK). Antenne apparaît alors sur
+l'accueil TV et se pilote à la télécommande : flèches pour se déplacer, OK pour ouvrir. Dans le
+lecteur, toujours en plein écran : OK lit ou met en pause, OK maintenu met la chaîne en favori,
+gauche/droite reculent ou avancent de 10 s, retour quitte. Pour essayer ce mode sur un
+téléphone : `flutter run --dart-define=ANTENNE_TV=true`.
+
 Compiler (Flutter 3.38) :
 
 ```bash
