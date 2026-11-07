@@ -30,6 +30,7 @@ class _PlayerPageState extends State<PlayerPage> {
   Timer? _progressTimer;
   Future<XtreamClient?>? _guideClient;
   var _fullscreen = false;
+  var _screenKeptOn = false;
 
   @override
   void didChangeDependencies() {
@@ -70,6 +71,8 @@ class _PlayerPageState extends State<PlayerPage> {
           _playback = playback;
           _loading = false;
         });
+        playback.addListener(_syncScreen);
+        _syncScreen();
         break;
       } catch (error) {
         lastError = error;
@@ -93,6 +96,14 @@ class _PlayerPageState extends State<PlayerPage> {
         action: SnackBarAction(label: 'Recommencer', onPressed: () => _playback?.seek(Duration.zero)),
       ));
     }
+  }
+
+  /// L'écran reste allumé tant que la vidéo joue ; en pause, il retrouve sa mise en veille normale.
+  void _syncScreen() {
+    final playing = _playback?.playing ?? false;
+    if (playing == _screenKeptOn) return;
+    _screenKeptOn = playing;
+    keepScreenOn(playing);
   }
 
   Future<void> _retry() async {
@@ -129,6 +140,7 @@ class _PlayerPageState extends State<PlayerPage> {
     _recordProgress();
     _progressTimer?.cancel();
     _playback?.dispose();
+    if (_screenKeptOn) keepScreenOn(false);
     if (_fullscreen) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       SystemChrome.setPreferredOrientations(DeviceOrientation.values);
