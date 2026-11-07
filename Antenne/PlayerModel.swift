@@ -1,6 +1,9 @@
 import AntenneCore
 import AVFoundation
 import Observation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Lecteur d'Apple d'abord (Picture in Picture, AirPlay), VLC pour ce qu'il ne sait pas lire.
 @MainActor
@@ -28,6 +31,14 @@ final class PlayerModel {
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     /// Position de reprise, appliquée dès que le flux est prêt.
     @ObservationIgnored private var startPosition: Double?
+    @ObservationIgnored private var timeControlObservation: NSKeyValueObservation?
+    @ObservationIgnored private let screenAwake = ScreenAwake()
+
+    init() {
+        timeControlObservation = player.observe(\.timeControlStatus) { [weak self] _, _ in
+            Task { @MainActor in self?.updateScreenAwake() }
+        }
+    }
 
     func play(_ channel: Channel, from position: Double? = nil) {
         stop()
@@ -71,6 +82,17 @@ final class PlayerModel {
         vlc?.stop()
         engine = .apple
         state = .idle
+        updateScreenAwake()
+    }
+
+    /// L'écran reste allumé tant qu'une vidéo joue ou se charge ; en pause, la veille normale reprend.
+    private func updateScreenAwake() {
+        switch engine {
+        case .apple:
+            screenAwake.isOn = player.timeControlStatus != .paused
+        case .vlc:
+            screenAwake.isOn = vlc.map { $0.status == .opening || $0.status == .playing } ?? false
+        }
     }
 
     private func playNextCandidate() {
@@ -118,6 +140,7 @@ final class PlayerModel {
         state = .loading
         vlc.onStatusChange = { [weak self] status in
             guard let self, self.engine == .vlc else { return }
+            updateScreenAwake()
             switch status {
             case .opening: state = .loading
             case .playing, .paused, .ended: state = .playing
@@ -126,5 +149,32 @@ final class PlayerModel {
         }
         vlc.play(channel.url, userAgent: channel.userAgent, from: startPosition)
         startPosition = nil
+        updateScreenAwake()
     }
+}
+
+/// Empêche l'écran de s'assombrir, de s'éteindre ou l'économiseur de démarrer.
+/// Le lecteur d'Apple le fait seul pendant une vidéo, VLC jamais : on le demande pour les deux.
+@MainActor
+private final class ScreenAwake {
+    var isOn = false {
+        didSet {
+            guard isOn != oldValue else { return }
+            #if canImport(UIKit)
+            UIApplication.shared.isIdleTimerDisabled = isOn
+            #else
+            if isOn {
+                activity = ProcessInfo.processInfo.beginActivity(
+                    options: [.idleDisplaySleepDisabled, .userInitiated], reason: "Lecture d'une vidéo")
+            } else if let activity {
+                ProcessInfo.processInfo.endActivity(activity)
+                self.activity = nil
+            }
+            #endif
+        }
+    }
+
+    #if !canImport(UIKit)
+    private var activity: NSObjectProtocol?
+    #endif
 }
