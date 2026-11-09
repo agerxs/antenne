@@ -32,6 +32,10 @@ class _PlayerPageState extends State<PlayerPage> {
   var _fullscreen = false;
   var _screenKeptOn = false;
 
+  /// Moteur essayé en premier. Choisi à la main dans le lecteur, il vaut pour la suite de la session :
+  /// sur certaines box, ExoPlayer donne le son sans l'image alors que mpv affiche tout.
+  static var _mpvFirst = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -62,7 +66,8 @@ class _PlayerPageState extends State<PlayerPage> {
     });
     final start = resume == null ? null : Duration(milliseconds: (resume * 1000).round());
     Object? lastError;
-    for (final engine in <Playback Function()>[ExoPlayback.new, MpvPlayback.new]) {
+    final engines = <Playback Function()>[ExoPlayback.new, MpvPlayback.new];
+    for (final engine in _mpvFirst ? engines.reversed : engines) {
       final playback = engine();
       try {
         await playback.open(widget.channel, start: start);
@@ -104,6 +109,19 @@ class _PlayerPageState extends State<PlayerPage> {
     if (playing == _screenKeptOn) return;
     _screenKeptOn = playing;
     keepScreenOn(playing);
+  }
+
+  /// Relance la lecture avec l'autre moteur, à la même position pour un film.
+  Future<void> _switchEngine() async {
+    final playback = _playback;
+    if (playback == null) return;
+    _mpvFirst = playback is! MpvPlayback;
+    final position = widget.channel.isLive ? null : playback.position.inMilliseconds / 1000;
+    _progressTimer?.cancel();
+    playback.removeListener(_syncScreen);
+    playback.dispose();
+    setState(() => _playback = null);
+    await _start(resume: position);
   }
 
   Future<void> _retry() async {
@@ -162,6 +180,7 @@ class _PlayerPageState extends State<PlayerPage> {
       onRetry: _retry,
       onFullscreen: () => _setFullscreen(!_fullscreen),
       onFavorite: () => toggleFavorite(context, widget.channel),
+      onSwitchEngine: _switchEngine,
     );
     return PopScope(
       // Le retour quitte d'abord le plein écran, sauf sur un téléviseur où il n'y a que lui.
@@ -215,6 +234,7 @@ class _Screen extends StatefulWidget {
     required this.onRetry,
     required this.onFullscreen,
     required this.onFavorite,
+    required this.onSwitchEngine,
   });
 
   final Playback? playback;
@@ -226,6 +246,7 @@ class _Screen extends StatefulWidget {
   final VoidCallback onRetry;
   final VoidCallback onFullscreen;
   final VoidCallback onFavorite;
+  final VoidCallback onSwitchEngine;
 
   @override
   State<_Screen> createState() => _ScreenState();
@@ -328,6 +349,11 @@ class _ScreenState extends State<_Screen> {
     if (step != null) {
       if (playback != null) _seekBy(playback, step);
       _showControls();
+      return KeyEventResult.handled;
+    }
+    // Bas, commandes affichées : changer de moteur (ExoPlayer ↔ mpv).
+    if (key == LogicalKeyboardKey.arrowDown && _controlsVisible && event is KeyDownEvent && playback != null) {
+      widget.onSwitchEngine();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
@@ -441,13 +467,21 @@ class _ScreenState extends State<_Screen> {
           const Text('DIRECT', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
           const Spacer(),
         ],
-        if (playback.badge case final badge?)
-          Container(
+        // Moteur en cours : un appui (ou Bas à la télécommande) passe à l'autre.
+        GestureDetector(
+          onTap: widget.onSwitchEngine,
+          child: Container(
             margin: const EdgeInsets.only(left: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(8)),
-            child: Text(badge, style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.swap_horiz, size: 14, color: Colors.white),
+              const SizedBox(width: 4),
+              Text(isTelevision ? '${playback.engineName} · Bas : changer' : playback.engineName,
+                  style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+            ]),
           ),
+        ),
         if (isTelevision) ...[
           const SizedBox(width: 12),
           Icon(widget.favorite ? Icons.star : Icons.star_border,

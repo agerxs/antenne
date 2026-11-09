@@ -10,8 +10,8 @@ import '../core/xtream.dart';
 
 /// Un moteur de lecture, vu par l'écran : la vidéo, son état et deux commandes.
 abstract class Playback extends ChangeNotifier {
-  /// Nom affiché quand ce n'est pas le moteur principal.
-  String? get badge;
+  /// Nom du moteur, affiché dans la barre pour pouvoir en changer.
+  String get engineName;
 
   Widget view();
   bool get playing;
@@ -36,7 +36,7 @@ class ExoPlayback extends Playback {
   String? _error;
 
   @override
-  String? get badge => null;
+  String get engineName => 'ExoPlayer';
 
   @override
   Widget view() {
@@ -67,13 +67,17 @@ class ExoPlayback extends Playback {
       uri,
       httpHeaders: {'User-Agent': channel.userAgent ?? userAgent},
       formatHint: uri.path.toLowerCase().endsWith('.m3u8') ? VideoFormat.hls : null,
-      // La vidéo s'affiche dans une surface Android, sans passer par le rendu de Flutter : sur
-      // certaines box IPTV, ce passage donne le son sans l'image.
-      viewType: VideoViewType.platformView,
+      // Pas de VideoViewType.platformView : ce mode fait planter l'app quand l'appareil n'a pas
+      // de décodeur pour l'image (NullPointerException dans video_player_android).
     );
     _controller = controller;
     // Un flux muet au-delà de ce délai est considéré comme illisible : le moteur de secours essaie.
     await controller.initialize().timeout(const Duration(seconds: 20));
+    // Sans décodeur pour l'image (HEVC ou MPEG-2 sur beaucoup de box), ExoPlayer joue le son seul,
+    // sans erreur. On le traite comme un échec : mpv décode alors l'image lui-même.
+    if (controller.value.size.isEmpty) {
+      throw StateError("Cet appareil ne sait pas décoder l'image de ce flux.");
+    }
     if (start != null) await controller.seekTo(start);
     await controller.play();
     controller.addListener(_changed);
@@ -108,7 +112,7 @@ class MpvPlayback extends Playback {
   String? _error;
 
   @override
-  String? get badge => 'mpv';
+  String get engineName => 'mpv';
 
   @override
   Widget view() => Video(controller: _video, controls: NoVideoControls, fill: Colors.black);
