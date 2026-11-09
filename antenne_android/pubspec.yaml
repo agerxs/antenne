@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+7
+version: 1.0.0+9
 
 environment:
   sdk: ^3.10.4
@@ -43,6 +43,12 @@ dependencies:
   file_picker: ^13.3.0
   crypto: ^3.0.8
   video_player: ^2.11.1
+
+# Copie locale de video_player_android 2.9.5, corrigée : l'affichage direct (platformView) plantait
+# quand le flux n'a pas d'image décodable. Voir third_party/video_player_android/ANTENNE.md.
+dependency_overrides:
+  video_player_android:
+    path: third_party/video_player_android
 
 dev_dependencies:
   flutter_test:

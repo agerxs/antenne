@@ -7,6 +7,7 @@ import '../core/library.dart';
 import '../core/models.dart';
 import '../core/xtream.dart';
 import 'device.dart';
+import 'diagnostics.dart';
 import 'library_scope.dart';
 import 'playback.dart';
 import 'widgets.dart';
@@ -32,9 +33,12 @@ class _PlayerPageState extends State<PlayerPage> {
   var _fullscreen = false;
   var _screenKeptOn = false;
 
-  /// Moteur essayé en premier. Choisi à la main dans le lecteur, il vaut pour la suite de la session :
-  /// sur certaines box, ExoPlayer donne le son sans l'image alors que mpv affiche tout.
-  static var _mpvFirst = false;
+  /// Moteurs, dans l'ordre d'essai par défaut. Selon la puce graphique, l'un peut rester noir quand
+  /// un autre affiche l'image : on en change avec Bas, et le choix vaut pour la suite de la session.
+  /// La texture d'abord : elle marche sur la plupart des appareils. La surface sauve les box à puce
+  /// graphique ancienne, mpv les formats qu'Android ne décode pas.
+  static final _engines = <Playback Function()>[ExoPlayback.texture, ExoPlayback.surface, MpvPlayback.new];
+  var _engineIndex = 0;
 
   @override
   void didChangeDependencies() {
@@ -66,12 +70,17 @@ class _PlayerPageState extends State<PlayerPage> {
     });
     final start = resume == null ? null : Duration(milliseconds: (resume * 1000).round());
     Object? lastError;
-    final engines = <Playback Function()>[ExoPlayback.new, MpvPlayback.new];
-    for (final engine in _mpvFirst ? engines.reversed : engines) {
-      final playback = engine();
+    final channel = widget.channel;
+    for (var i = 0; i < _engines.length; i++) {
+      final index = (EnginePreference.index + i) % _engines.length;
+      final playback = _engines[index]();
       try {
-        await playback.open(widget.channel, start: start);
+        await playback.open(channel, start: start);
+        final size = playback.videoSize;
+        PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : '
+            'image ${size.width.round()}×${size.height.round()}');
         if (!mounted) return playback.dispose();
+        _engineIndex = index;
         setState(() {
           _playback = playback;
           _loading = false;
@@ -81,6 +90,7 @@ class _PlayerPageState extends State<PlayerPage> {
         break;
       } catch (error) {
         lastError = error;
+        PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : échec, ${hideLinks(error)}');
         playback.dispose();
       }
     }
@@ -115,13 +125,20 @@ class _PlayerPageState extends State<PlayerPage> {
   Future<void> _switchEngine() async {
     final playback = _playback;
     if (playback == null) return;
-    _mpvFirst = playback is! MpvPlayback;
+    EnginePreference.save((_engineIndex + 1) % _engines.length);
+    PlaybackLog.add('Changement de lecteur à la main (${playback.engineName} → suivant)');
     final position = widget.channel.isLive ? null : playback.position.inMilliseconds / 1000;
     _progressTimer?.cancel();
     playback.removeListener(_syncScreen);
     playback.dispose();
     setState(() => _playback = null);
     await _start(resume: position);
+    if (mounted && _playback != null) {
+      _messenger.showSnackBar(SnackBar(
+        content: Text('Lecteur : ${_playback!.engineName}. Image noire ? Bas pour changer encore.'),
+        duration: const Duration(seconds: 4),
+      ));
+    }
   }
 
   Future<void> _retry() async {
@@ -284,7 +301,8 @@ class _ScreenState extends State<_Screen> {
   void _scheduleHide() {
     _hide?.cancel();
     // Les commandes s'effacent seules pendant la lecture.
-    _hide = Timer(const Duration(seconds: 4), () {
+    // Sur un téléviseur, les commandes restent plus longtemps : elles indiquent comment changer de lecteur.
+    _hide = Timer(Duration(seconds: isTelevision ? 8 : 4), () {
       if (mounted && (widget.playback?.playing ?? false) && _scrubbing == null) {
         setState(() => _controlsVisible = false);
       }
@@ -351,8 +369,9 @@ class _ScreenState extends State<_Screen> {
       _showControls();
       return KeyEventResult.handled;
     }
-    // Bas, commandes affichées : changer de moteur (ExoPlayer ↔ mpv).
-    if (key == LogicalKeyboardKey.arrowDown && _controlsVisible && event is KeyDownEvent && playback != null) {
+    // Bas : changer de moteur (ExoPlayer ↔ mpv). À la télécommande, à tout moment : sur une image noire,
+    // on ne voit pas toujours les commandes. Au toucher, seulement quand elles sont affichées.
+    if (key == LogicalKeyboardKey.arrowDown && (_controlsVisible || isTelevision) && event is KeyDownEvent && playback != null) {
       widget.onSwitchEngine();
       return KeyEventResult.handled;
     }

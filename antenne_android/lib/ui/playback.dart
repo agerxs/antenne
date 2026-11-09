@@ -13,6 +13,9 @@ abstract class Playback extends ChangeNotifier {
   /// Nom du moteur, affiché dans la barre pour pouvoir en changer.
   String get engineName;
 
+  /// Taille de l'image décodée (vide s'il n'y a pas d'image), pour le diagnostic.
+  Size get videoSize;
+
   Widget view();
   bool get playing;
   bool get buffering;
@@ -32,11 +35,22 @@ abstract class Playback extends ChangeNotifier {
 /// ExoPlayer (Media3), via le plugin officiel : décodeurs matériels du téléphone,
 /// HLS, MPEG-TS, MP4, MKV, AVI. C'est le moteur de TiviMate et d'IPTV Smarters.
 class ExoPlayback extends Playback {
+  /// `surface` : l'image s'affiche dans une surface Android (SurfaceView), sans passer par le rendu
+  /// de Flutter. Sinon, elle passe par une texture Flutter. Selon la puce graphique de l'appareil,
+  /// l'une ou l'autre peut rester noire (Mali-450 des box RK3528, par exemple) : on peut en changer.
+  ExoPlayback({required this.surface});
+  ExoPlayback.surface() : this(surface: true);
+  ExoPlayback.texture() : this(surface: false);
+
+  final bool surface;
   VideoPlayerController? _controller;
   String? _error;
 
   @override
-  String get engineName => 'ExoPlayer';
+  String get engineName => surface ? 'ExoPlayer · surface' : 'ExoPlayer · texture';
+
+  @override
+  Size get videoSize => _controller?.value.size ?? Size.zero;
 
   @override
   Widget view() {
@@ -67,8 +81,9 @@ class ExoPlayback extends Playback {
       uri,
       httpHeaders: {'User-Agent': channel.userAgent ?? userAgent},
       formatHint: uri.path.toLowerCase().endsWith('.m3u8') ? VideoFormat.hls : null,
-      // Pas de VideoViewType.platformView : ce mode fait planter l'app quand l'appareil n'a pas
-      // de décodeur pour l'image (NullPointerException dans video_player_android).
+      // Le plantage de l'affichage en surface sans image décodable est corrigé dans
+      // third_party/video_player_android.
+      viewType: surface ? VideoViewType.platformView : VideoViewType.textureView,
     );
     _controller = controller;
     // Un flux muet au-delà de ce délai est considéré comme illisible : le moteur de secours essaie.
@@ -113,6 +128,9 @@ class MpvPlayback extends Playback {
 
   @override
   String get engineName => 'mpv';
+
+  @override
+  Size get videoSize => Size((_player.state.width ?? 0).toDouble(), (_player.state.height ?? 0).toDouble());
 
   @override
   Widget view() => Video(controller: _video, controls: NoVideoControls, fill: Colors.black);

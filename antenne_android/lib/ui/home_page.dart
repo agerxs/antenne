@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../core/models.dart';
 import 'add_playlist_page.dart';
 import 'channel_list_page.dart';
+import 'device.dart';
+import 'diagnostics.dart';
 import 'library_scope.dart';
 import 'widgets.dart';
 import 'xtream_page.dart';
@@ -45,6 +47,20 @@ class HomePage extends StatelessWidget {
               ),
             ),
           for (final playlist in playlists) _PlaylistTile(playlist: playlist, refreshing: library.refreshing.contains(playlist.id)),
+          const Divider(height: 32),
+          ListTile(
+            leading: const Icon(Icons.troubleshoot),
+            title: const Text('Diagnostic et vidéos de test'),
+            subtitle: const Text("Si une chaîne reste noire : ce que l'appareil sait lire"),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DiagnosticPage())),
+          ),
+          if (appVersion case final version?)
+            Padding(
+              padding: const EdgeInsets.only(top: 32),
+              child: Text('Antenne $version',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
+            ),
         ],
       ),
     );

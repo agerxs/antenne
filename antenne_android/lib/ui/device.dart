@@ -15,6 +15,41 @@ Future<void> detectTelevision() async {
   }
 }
 
+/// Version installée, par exemple « 1.0.0 (8) », ou null si on ne peut pas la lire.
+String? appVersion;
+
+Future<void> detectAppVersion() async {
+  try {
+    appVersion = await _channel.invokeMethod<String>('appVersion');
+  } on MissingPluginException {
+    appVersion = null;
+  } on PlatformException {
+    appVersion = null;
+  }
+}
+
+/// Appareil, puce, OpenGL ES et décodeurs vidéo (voir MainActivity.deviceReport).
+Future<Map<String, Object?>> deviceReport() async {
+  try {
+    return await _channel.invokeMapMethod<String, Object?>('deviceReport') ?? const {};
+  } on MissingPluginException {
+    return const {};
+  } on PlatformException {
+    return const {};
+  }
+}
+
+/// Ouvre le partage d'Android avec ce texte. Faux si l'appareil n'a aucune app pour le recevoir.
+Future<bool> shareText(String text) async {
+  try {
+    return await _channel.invokeMethod<bool>('shareText', text) ?? false;
+  } on MissingPluginException {
+    return false;
+  } on PlatformException {
+    return false;
+  }
+}
+
 /// Empêche l'écran de s'éteindre ou l'économiseur de démarrer tant que [on] est vrai.
 Future<void> keepScreenOn(bool on) async {
   try {

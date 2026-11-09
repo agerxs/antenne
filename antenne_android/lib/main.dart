@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'core/library.dart';
 import 'ui/device.dart';
+import 'ui/diagnostics.dart';
 import 'ui/home_page.dart';
 import 'ui/library_scope.dart';
 
@@ -12,6 +13,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   await detectTelevision();
+  await detectAppVersion();
+  await PlaybackLog.load();
+  await EnginePreference.load();
   final library = await Library.load(
     directory: await getApplicationSupportDirectory(),
     cacheDirectory: await getApplicationCacheDirectory(),
