@@ -724,7 +724,7 @@
       for (var i = w.start; i < w.end; i++) {
         var category = this.categories[i];
         var focused = i === this.catIndex;
-        html += '<div class="row' + (focused && this.zone !== 'sections' ? ' focus' : '') + (focused ? ' current' : '') + (category.search || category.favorites ? ' search' : '') + '">' +
+        html += '<div class="row' + (focused && this.zone !== 'sections' ? ' focus' : '') + (focused ? ' current' : '') + (category.search || category.favorites ? ' special' : '') + '">' +
           (category.search ? ICON.search : category.favorites ? ICON.star : '') + '<span class="label">' + esc(category.name) + '</span>' +
           (category.channels ? '<span class="count">' + category.channels.length + '</span>'
             : category.favorites ? '<span class="count">' + this.favoritesHere().length + '</span>' : '') + '</div>';
@@ -877,7 +877,7 @@
     var self = this;
     var html = header(this.browse.playlist.name + ' · Rechercher', this.zone === 'input' ? 'OK : écrire    Bas : résultats    Retour : catégories'
       : 'OK : regarder    Droite : favori    Retour : recherche');
-    html += '<div class="search"><label class="field' + (this.zone === 'input' ? ' focus' : '') + '">' + ICON.search +
+    html += '<div class="search-screen"><label class="field' + (this.zone === 'input' ? ' focus' : '') + '">' + ICON.search +
       '<input data-key="query" type="text" value="' + esc(this.values.query) + '" placeholder="' + (this.browse.section() === 'movies' ? 'Titre du film' : 'Nom de la chaîne') + '"' +
       ' autocomplete="off" autocapitalize="off" spellcheck="false"></label>' +
       '<div class="message"></div><div class="column results"></div></div>';
@@ -893,8 +893,8 @@
 
   /** Met à jour l'état et les résultats sans toucher au champ : le clavier du téléviseur reste ouvert. */
   SearchScreen.prototype.refresh = function () {
-    var message = appEl.querySelector('.search .message');
-    var results = appEl.querySelector('.search .results');
+    var message = appEl.querySelector('.search-screen .message');
+    var results = appEl.querySelector('.search-screen .results');
     if (!message || !results) return;
     message.className = 'message' + (this.failed ? ' error' : '');
     message.textContent = this.status;

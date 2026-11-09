@@ -1,5 +1,5 @@
 // Dessine l'icône d'Antenne : Antenne/Assets.xcassets/AppIcon.appiconset (iPhone, Mac)
-// et les icônes adaptatives d'antenne_android (fond et motif séparés).
+// les icônes adaptatives d'antenne_android (fond et motif séparés) et celle de l'app TV Samsung.
 // Usage : swift scripts/app-icon.swift
 import AppKit
 
@@ -93,6 +93,8 @@ func render(size: Int, mac: Bool) -> Data {
 
 var images: [[String: String]] = []
 try render(size: 1024, mac: false).write(to: iconSet.appending(path: "ios-1024.png"))
+// Téléviseurs Samsung (app web Tizen) : même icône, en 512.
+try render(size: 512, mac: false).write(to: root.appending(path: "antenne_tizen_web/icon.png"))
 images.append(["idiom": "universal", "platform": "ios", "size": "1024x1024", "filename": "ios-1024.png"])
 for points in [16, 32, 128, 256, 512] {
     for scale in [1, 2] {
