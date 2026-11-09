@@ -89,7 +89,8 @@ test('Xtream : direct, liens HLS, logos, identifiants', async () => {
   const categories = await client('live.tv', server).categories('live');
   assert.deepEqual(categories.map((c) => c.id), ['12', '13']);
   const channels = await client('live.tv', server).channels('live', categories[0]);
-  assert.equal(channels[0].url, 'http://live.tv:8080/live/ager/p%2Bw/101.m3u8');
+  assert.equal(channels[0].url, 'http://live.tv:8080/live/ager/p%2Bw/101.ts');
+  assert.equal(channels[0].fallbackUrl, 'http://live.tv:8080/live/ager/p%2Bw/101.m3u8');
   assert.equal(channels[0].streamId, '101');
   assert.equal(channels[0].logoUrl, 'http://img/bein.png');
   assert.equal(channels[1].logoUrl, undefined);
@@ -116,4 +117,60 @@ test('Xtream : réponses vides tolérées', async () => {
 
 test('les liens sont masqués dans les messages d’erreur', () => {
   assert.equal(core.hideLinks('Échec : http://h.tv/live/ager/secret/1.m3u8 (code 5)'), 'Échec : [lien] (code 5)');
+});
+
+test('Xtream : toutes les chaînes, avec le nom de leur catégorie', async () => {
+  const server = fakeServer({
+    [api('tout.tv', '&action=get_live_categories')]: [200, '[{"category_id":"12","category_name":"CI| INFOS"}]'],
+    [api('tout.tv', '&action=get_live_streams')]: [200, '[{"name":"RTI 1","stream_id":1,"category_id":"12"},{"name":"Autre","stream_id":2,"category_id":"99"}]'],
+  });
+  const all = await client('tout.tv', server).allChannels('live');
+  assert.deepEqual(all.map((c) => [c.name, c.group]), [['RTI 1', 'CI| INFOS'], ['Autre', undefined]]);
+  assert.equal(all[0].url, 'http://tout.tv:8080/live/ager/p%2Bw/1.ts');
+});
+
+test('recherche : accents, casse, mots dans le désordre, début du nom d’abord', () => {
+  const channels = ['Canal+ Sport', 'beIN Sports 1', 'Télé Sport Côte d’Ivoire', 'Sport 24', 'Novelas'].map((name) => ({ name }));
+  assert.deepEqual(core.search(channels, 'SPORT').map((c) => c.name), ['Sport 24', 'Canal+ Sport', 'beIN Sports 1', 'Télé Sport Côte d’Ivoire']);
+  assert.deepEqual(core.search(channels, 'ivoire tele').map((c) => c.name), ['Télé Sport Côte d’Ivoire']);
+  assert.deepEqual(core.search(channels, '   '), []);
+  assert.equal(core.search(channels, 's', 2).length, 2);
+});
+
+test('Xtream : guide, base64 décodé, émissions finies écartées', async () => {
+  const now = 1793136000000;
+  const s = now / 1000;
+  const b64 = (t) => Buffer.from(t, 'utf8').toString('base64');
+  const server = fakeServer({
+    [api('epg.tv', '&action=get_short_epg&stream_id=55&limit=4')]: [200, JSON.stringify({ epg_listings: [
+      { title: b64('Le 20 h'), description: b64('Journal du soir.'), start_timestamp: String(s + 3600), stop_timestamp: String(s + 5400) },
+      { title: b64('Fini'), start_timestamp: String(s - 7200), stop_timestamp: String(s - 3600) },
+      { title: 'Météo', description: '', start_timestamp: s - 600, stop_timestamp: s + 600 },
+    ] })],
+  });
+  const guide = await client('epg.tv', server).guide({ streamId: '55' }, 4, now);
+  assert.deepEqual(guide.map((p) => p.title), ['Météo', 'Le 20 h']);
+  assert.equal(guide[0].summary, null);
+  assert.equal(guide[1].summary, 'Journal du soir.');
+  assert.equal(guide[0].start, now - 600000);
+  assert.deepEqual(await client('epg.tv', server).guide({ name: 'Film' }), []);
+});
+
+test('stockage : anciens liens HLS du direct convertis en MPEG-TS, une seule chaîne pour les deux formes', () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const old = { playlists: [], history: [], progress: {},
+    favorites: [{ name: 'RTI 1', url: 'http://h.tv:8080/live/u/p/7.m3u8', streamId: '7', live: true, playlistId: 'x' }] };
+  const data = { 'antenne.v1': JSON.stringify(old) };
+  const sandbox = { localStorage: { getItem: (k) => data[k] ?? null, setItem: (k, v) => { data[k] = v; } } };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../js/store.js'), 'utf8'), sandbox);
+  const store = sandbox.AntenneStore;
+  assert.equal(store.favorites()[0].url, 'http://h.tv:8080/live/u/p/7.ts');
+  assert.equal(store.favorites()[0].fallbackUrl, 'http://h.tv:8080/live/u/p/7.m3u8');
+  assert.equal(store.isFavorite({ url: 'http://h.tv:8080/live/u/p/7.ts' }), true);
+  assert.equal(store.isFavorite({ url: 'http://h.tv:8080/live/u/p/7.m3u8' }), true);
+  store.recordWatched({ name: 'RTI 1', url: 'http://h.tv:8080/live/u/p/7.m3u8', live: true });
+  store.recordWatched({ name: 'RTI 1', url: 'http://h.tv:8080/live/u/p/7.ts', live: true });
+  assert.equal(store.history().length, 1);
+  assert.equal(store.isFavorite({ url: 'http://autre.tv/live/u/p/7.m3u8' }), false);
 });

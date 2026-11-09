@@ -115,3 +115,104 @@ body.playing #app { display: none; }
 #osd .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 8px; }
 #osd .bar i { display: block; height: 100%; background: var(--orange); }
 #osd .keys { font-size: 22px; color: var(--muted); margin-top: 6px; }
+
+/* Accueil en rangées de cartes */
+.home-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 28px; }
+.clock { font-size: 40px; font-weight: 300; color: var(--muted); font-variant-numeric: tabular-nums; }
+.intro { color: var(--muted); font-size: 28px; line-height: 1.45; max-width: 1100px; margin: 0 0 24px; }
+.shelves { transition: transform 0.18s ease-out; }
+.shelf { overflow: hidden; padding: 6px 8px 0; margin: 0 -8px; }
+.shelf h2 { margin: 0 0 14px; font-size: 28px; font-weight: 600; color: var(--muted); }
+.shelf.active h2 { color: var(--text); }
+.shelf.hero { height: 330px; }
+.shelf.channel { height: 318px; }
+.shelf.playlist { height: 222px; }
+.track { display: flex; gap: 24px; transition: transform 0.18s ease-out; }
+
+.card { flex: none; border-radius: 12px; border: 3px solid transparent; }
+.card.focus { border-color: var(--orange-soft); }
+.card .name { font-size: 28px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .meta { font-size: 24px; color: var(--muted); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tile { position: relative; width: 280px; height: 158px; border-radius: 9px; background: var(--panel-high);
+        display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.tile img { position: absolute; inset: 18px; width: calc(100% - 36px); height: calc(100% - 36px); object-fit: contain; z-index: 1; }
+.tile .monogram { font-size: 52px; font-weight: 700; color: var(--muted); letter-spacing: 1px; }
+.tile img + .monogram { visibility: hidden; }
+.tile.large { width: 420px; height: 236px; }
+.tile.large .monogram { font-size: 76px; }
+
+.card.channel { width: 280px; }
+.card.channel .tile { width: 274px; }
+.card.channel .name { padding: 12px 4px 0; font-size: 26px; }
+.card.channel.focus .tile { background: #2a3d63; }
+
+.card.hero { display: flex; gap: 40px; align-items: center; width: 1300px; padding: 0; background: var(--panel); }
+.card.hero .tile { border-radius: 9px 0 0 9px; }
+.card.hero .text { flex: 1; min-width: 0; padding-right: 40px; }
+.card.hero .name { font-size: 44px; font-weight: 600; }
+.card.hero .meta { font-size: 28px; }
+
+.card.playlist { display: flex; align-items: center; gap: 22px; width: 420px; height: 130px; padding: 0 28px; background: var(--panel); }
+.card.playlist .icon { width: 34px; height: 34px; color: var(--orange-soft); }
+.card.playlist .text { min-width: 0; }
+.card.playlist.quiet { background: transparent; border-color: var(--line); color: var(--muted); }
+.card.playlist.quiet .icon { color: var(--muted); }
+.card.playlist.quiet.focus { border-color: var(--orange-soft); color: var(--text); }
+
+.progress { height: 6px; margin: 12px 4px 0; border-radius: 3px; background: var(--line); overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--orange); }
+
+/* Favoris et recherche */
+.icon.star { width: 24px; height: 24px; color: var(--orange-soft); fill: var(--orange-soft); }
+.row .action { flex: none; padding: 8px 20px; border-radius: 8px; font-size: 24px; border: 2px solid var(--orange-soft);
+               background: rgba(255, 138, 76, 0.15); }
+.row.search { color: var(--orange-soft); }
+.search { width: 1300px; display: flex; flex-direction: column; gap: 14px; }
+.search .field .icon { color: var(--muted); }
+.search .results { display: flex; flex-direction: column; gap: 8px; }
+
+/* Aperçu dans la liste des chaînes. La page devient transparente et seule la fenêtre laisse voir
+   la vidéo : son ombre (très large) repeint tout le reste de l'écran. */
+body.preview { background: transparent; }
+.layer { position: relative; z-index: 1; }
+.browse.with-preview { width: 968px; gap: 32px; }
+.browse.with-preview .column.categories { width: 360px; }
+.preview-panel .screen {
+  position: absolute; left: 1104px; top: 150px; width: 720px; height: 405px; z-index: 0;
+  border-radius: 10px; box-shadow: 0 0 0 3000px var(--night);
+  display: flex; align-items: center; justify-content: center; text-align: center;
+}
+.preview-panel .screen.idle, .preview-panel .screen.busy, .preview-panel .screen.poster { background: var(--panel); }
+.preview-panel .screen span { color: var(--muted); font-size: 26px; padding: 0 40px; }
+.preview-panel .screen .tile.poster { width: 720px; height: 405px; border-radius: 10px; }
+.preview-panel .info { position: absolute; left: 1104px; top: 580px; width: 720px; z-index: 1; }
+.preview-panel .info .name { font-size: 36px; font-weight: 600; margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-panel .info .meta { font-size: 26px; color: var(--muted); }
+
+/* Guide : en cours et ensuite */
+.now, .next { font-size: 27px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.next { color: var(--muted); margin-top: 14px; }
+.when { display: inline-block; min-width: 150px; color: var(--orange-soft); font-variant-numeric: tabular-nums; }
+.next .when { color: var(--muted); }
+.summary { font-size: 23px; color: var(--muted); margin-top: 10px; line-height: 1.4; max-height: 3.2em; overflow: hidden; }
+#osd .progress { margin: 4px 0 0; max-width: 900px; }
+
+/* Bandeau des chaînes en plein écran */
+#strip {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 300px; padding: 30px 96px 0;
+  background: rgba(12, 19, 34, 0.92);
+}
+#strip[hidden] { display: none; }
+#strip .track { display: flex; gap: 24px; justify-content: center; }
+.card.current .name { color: var(--orange-soft); }
+#osd.raised { bottom: 330px; }
+
+/* Message bref (favori ajouté ou retiré) */
+#toast {
+  position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+  padding: 18px 36px; border-radius: 12px; background: var(--panel-high); border: 2px solid var(--orange-soft);
+  font-size: 28px; z-index: 10;
+}
+#toast[hidden] { display: none; }
+#osd .title .icon.star, #strip .name .icon.star { width: 26px; height: 26px; vertical-align: -3px; margin-right: 6px; }

@@ -182,6 +182,9 @@
     return this.server + '/player_api.php?' + query;
   };
 
+  // Direct en MPEG-TS (comme TiviMate par défaut) : en quittant la chaîne, la connexion se ferme et le
+  // fournisseur libère tout de suite la place. En HLS, il la compte encore plusieurs dizaines de secondes,
+  // ce qui bloque le zapping avec un abonnement à un seul écran. Le HLS reste en secours (fallbackUrl).
   XtreamClient.prototype.streamUrl = function (kind, id, extension) {
     return this.server + '/' + kind + '/' + encodeURIComponent(this.username) + '/' + encodeURIComponent(this.password) +
       '/' + id + '.' + extension;
@@ -230,13 +233,16 @@
         var channel = {
           name: text(record.name) || 'Sans nom',
           url: kind === 'live'
-            ? self.streamUrl('live', id, 'm3u8')
+            ? self.streamUrl('live', id, 'ts')
             : self.streamUrl('movie', id, text(record.container_extension) || 'mp4'),
           group: category.name,
         };
         var logo = text(record.stream_icon);
         if (logo) channel.logoUrl = logo;
-        if (kind === 'live') channel.streamId = id;
+        if (kind === 'live') {
+          channel.streamId = id;
+          channel.fallbackUrl = self.streamUrl('live', id, 'm3u8');
+        }
         list.push(channel);
         return list;
       }, []);
@@ -262,6 +268,99 @@
     };
   }
 
+  /**
+   * Émission en cours et suivantes d'une chaîne en direct, triées, sans celles déjà terminées.
+   * Chaque émission : { title, summary, start, end } (dates en millisecondes).
+   */
+  XtreamClient.prototype.guide = function (channel, limit, now) {
+    if (!channel.streamId) return Promise.resolve([]);
+    return this.load('get_short_epg', { stream_id: channel.streamId, limit: String(limit || 4) }).then(function (json) {
+      var at = now == null ? Date.now() : now;
+      return records(isObject(json) ? json.epg_listings : null).reduce(function (list, record) {
+        var start = num(record.start_timestamp);
+        var end = num(record.stop_timestamp != null ? record.stop_timestamp : record.end_timestamp);
+        if (start == null || end == null || end <= start || end * 1000 <= at) return list;
+        list.push({
+          title: decoded(record.title) || 'Programme sans titre',
+          summary: decoded(record.description),
+          start: start * 1000,
+          end: end * 1000,
+        });
+        return list;
+      }, []).sort(function (a, b) { return a.start - b.start; });
+    });
+  };
+
+  /** Les panneaux Xtream encodent titres et descriptions du guide en base64 (la plupart du temps). */
+  function decoded(value) {
+    var raw = text(value);
+    if (raw == null) return null;
+    if (raw.length % 4 === 0 && /^[A-Za-z0-9+/]+=*$/.test(raw)) {
+      try {
+        var bytes = Uint8Array.from(atob(raw), function (c) { return c.charCodeAt(0); });
+        var result = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        if (!/[\u0000-\u0009\u000b-\u001f]/.test(result)) return result.trim() || null;
+      } catch (e) {
+        // Pas du base64 (ou pas de l'UTF-8) : texte brut.
+      }
+    }
+    return raw;
+  }
+
+  /** Toutes les chaînes en direct (ou tous les films) du compte, pour la recherche. */
+  XtreamClient.prototype.allChannels = function (kind) {
+    var self = this;
+    var action = kind === 'live' ? 'get_live_streams' : 'get_vod_streams';
+    return Promise.all([this.categories(kind).catch(function () { return []; }), this.load(action)]).then(function (results) {
+      var names = {};
+      results[0].forEach(function (category) { names[category.id] = category.name; });
+      return records(results[1]).reduce(function (list, record) {
+        var id = text(record.stream_id);
+        if (id == null) return list;
+        var channel = {
+          name: text(record.name) || 'Sans nom',
+          url: kind === 'live'
+            ? self.streamUrl('live', id, 'ts')
+            : self.streamUrl('movie', id, text(record.container_extension) || 'mp4'),
+        };
+        var group = names[text(record.category_id)];
+        if (group) channel.group = group;
+        var logo = text(record.stream_icon);
+        if (logo) channel.logoUrl = logo;
+        if (kind === 'live') {
+          channel.streamId = id;
+          channel.fallbackUrl = self.streamUrl('live', id, 'm3u8');
+        }
+        list.push(channel);
+        return list;
+      }, []);
+    });
+  };
+
+  /** Texte comparable : minuscules, sans accents ni ponctuation. */
+  function fold(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  /**
+   * Chaînes dont le nom contient tous les mots cherchés (sans tenir compte des accents ni de la casse).
+   * Celles dont le nom commence par la recherche passent en premier.
+   */
+  function search(channels, query, limit) {
+    var folded = fold(query);
+    if (!folded) return [];
+    var words = folded.split(' ');
+    var first = [];
+    var others = [];
+    for (var i = 0; i < channels.length && first.length + others.length < (limit || 300); i++) {
+      var name = fold(channels[i].name);
+      if (words.every(function (word) { return name.indexOf(word) >= 0; })) {
+        (name.indexOf(folded) === 0 ? first : others).push(channels[i]);
+      }
+    }
+    return first.concat(others);
+  }
+
   /** Masque les liens d'un message d'erreur : ceux d'un compte Xtream contiennent le mot de passe. */
   function hideLinks(message) {
     return String(message).replace(/\w+:\/\/\S+/g, '[lien]');
@@ -274,6 +373,7 @@
     XtreamClient: XtreamClient,
     XtreamError: XtreamError,
     jsonFetcher: jsonFetcher,
+    search: search,
     hideLinks: hideLinks,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
