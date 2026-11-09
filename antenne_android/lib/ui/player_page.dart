@@ -375,6 +375,14 @@ class _ScreenState extends State<_Screen> {
               const SizedBox(height: 4),
               Text('Le flux ne répond pas, ou ni ExoPlayer ni mpv ne savent le lire.',
                   textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+              const SizedBox(height: 8),
+              // Détail du lecteur, pour comprendre la panne. Les liens sont masqués : ceux d'un
+              // compte Xtream contiennent l'identifiant et le mot de passe.
+              Text(failure.replaceAll(RegExp(r'\w+://\S+'), '[lien]'),
+                  textAlign: TextAlign.center,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: scheme.onSurfaceVariant.withValues(alpha: 0.7), fontSize: 11)),
               const SizedBox(height: 12),
               OutlinedButton(onPressed: widget.onRetry, child: const Text('Réessayer')),
             ]),

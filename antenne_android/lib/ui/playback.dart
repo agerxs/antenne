@@ -67,6 +67,9 @@ class ExoPlayback extends Playback {
       uri,
       httpHeaders: {'User-Agent': channel.userAgent ?? userAgent},
       formatHint: uri.path.toLowerCase().endsWith('.m3u8') ? VideoFormat.hls : null,
+      // La vidéo s'affiche dans une surface Android, sans passer par le rendu de Flutter : sur
+      // certaines box IPTV, ce passage donne le son sans l'image.
+      viewType: VideoViewType.platformView,
     );
     _controller = controller;
     // Un flux muet au-delà de ce délai est considéré comme illisible : le moteur de secours essaie.
