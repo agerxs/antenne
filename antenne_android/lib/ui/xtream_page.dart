@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/models.dart';
 import '../core/xtream.dart';
+import 'channel_groups.dart';
 import 'library_scope.dart';
 import 'series_page.dart';
 import 'widgets.dart';
@@ -161,6 +162,22 @@ class _CategoryListState extends State<_CategoryList> with AutomaticKeepAliveCli
   Future<List<XtreamCategory>>? _categories;
   final _items = <String, _Items>{};
 
+  /// Les catégories vues par le lecteur (direct et films) : il y zappe et en change sans revenir ici.
+  ChannelGroups? _groups;
+  List<XtreamCategory>? _groupsFor;
+
+  ChannelGroups? _groupsOf(List<XtreamCategory> categories) {
+    if (widget.kind == ContentKind.series) return null;
+    if (!identical(_groupsFor, categories)) {
+      _groupsFor = categories;
+      _groups = ChannelGroups(
+        names: [for (final c in categories) c.name],
+        load: (index) => widget.client.channels(widget.kind, categories[index]),
+      );
+    }
+    return _groups;
+  }
+
   @override
   bool get wantKeepAlive => true;
 
@@ -210,9 +227,18 @@ class _CategoryListState extends State<_CategoryList> with AutomaticKeepAliveCli
             return ListView(children: [FailureRow(message: snapshot.error.toString(), onRetry: _reload)]);
           }
           if (!snapshot.hasData) return ListView(children: const [LoadingRow(text: 'Chargement des catégories…')]);
-          final categories = snapshot.data!.where(_matches).toList();
-          if (snapshot.data!.isEmpty) {
+          final all = snapshot.data!;
+          final categories = all.where(_matches).toList();
+          if (all.isEmpty) {
             return ListView(children: const [ListTile(title: Text('Aucune catégorie dans cette rubrique.'))]);
+          }
+          final groups = _groupsOf(all);
+          if (groups != null && wideLayout(context)) {
+            return GroupedChannelBrowser(
+              groups: groups,
+              query: widget.query,
+              tile: (channel, group) => _tile(channel, groups, group),
+            );
           }
           return ListView.builder(
             itemCount: categories.length,
@@ -226,7 +252,7 @@ class _CategoryListState extends State<_CategoryList> with AutomaticKeepAliveCli
                 onExpansionChanged: (expanded) {
                   if (expanded) _loadItems(category);
                 },
-                children: _children(category),
+                children: _children(category, groups, all.indexOf(category)),
               );
             },
           );
@@ -235,7 +261,11 @@ class _CategoryListState extends State<_CategoryList> with AutomaticKeepAliveCli
     );
   }
 
-  List<Widget> _children(XtreamCategory category) {
+  Widget _tile(Channel channel, ChannelGroups? groups, int group) => channel.isLive
+      ? _LiveTile(channel: channel, client: widget.client, groups: groups, group: group)
+      : ChannelTile(channel: channel, groups: groups, group: group);
+
+  List<Widget> _children(XtreamCategory category, ChannelGroups? groups, int group) {
     final items = _items[category.id];
     switch (items) {
       case null || _Loading():
@@ -247,7 +277,7 @@ class _CategoryListState extends State<_CategoryList> with AutomaticKeepAliveCli
         if (channels.isEmpty && series.isEmpty) return const [ListTile(title: Text('Catégorie vide.'))];
         return [
           for (final channel in channels.where((c) => visible(c.name)))
-            channel.isLive ? _LiveTile(channel: channel, client: widget.client) : ChannelTile(channel: channel),
+            _tile(channel, groups, group),
           for (final show in series.where((s) => visible(s.name)))
             ListTile(
               leading: ChannelLogo(url: show.coverUrl, name: show.name, width: 36, height: 52),
@@ -272,9 +302,11 @@ class _CategoryListState extends State<_CategoryList> with AutomaticKeepAliveCli
 
 /// Ligne d'une chaîne en direct : l'émission en cours remplace le nom de la catégorie.
 class _LiveTile extends StatefulWidget {
-  const _LiveTile({required this.channel, required this.client});
+  const _LiveTile({required this.channel, required this.client, this.groups, this.group = 0});
   final Channel channel;
   final XtreamClient client;
+  final ChannelGroups? groups;
+  final int group;
 
   @override
   State<_LiveTile> createState() => _LiveTileState();
@@ -294,5 +326,6 @@ class _LiveTileState extends State<_LiveTile> {
   }
 
   @override
-  Widget build(BuildContext context) => ChannelTile(channel: widget.channel, subtitle: _onAir?.title);
+  Widget build(BuildContext context) => ChannelTile(
+      channel: widget.channel, subtitle: _onAir?.title, groups: widget.groups, group: widget.group);
 }

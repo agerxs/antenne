@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../core/library.dart';
 import '../core/models.dart';
 import '../core/xtream.dart';
+import 'channel_groups.dart';
 import 'device.dart';
 import 'diagnostics.dart';
 import 'library_scope.dart';
@@ -13,9 +14,12 @@ import 'playback.dart';
 import 'widgets.dart';
 
 /// Lecture d'une chaîne, d'un film ou d'un épisode : ExoPlayer d'abord, mpv s'il échoue.
+/// Ouvert depuis une liste, il garde ses voisines : on zappe et on change de catégorie sans en sortir.
 class PlayerPage extends StatefulWidget {
-  const PlayerPage({super.key, required this.channel});
+  const PlayerPage({super.key, required this.channel, this.groups, this.group = 0});
   final Channel channel;
+  final ChannelGroups? groups;
+  final int group;
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -32,6 +36,15 @@ class _PlayerPageState extends State<PlayerPage> {
   Future<XtreamClient?>? _guideClient;
   var _fullscreen = false;
   var _screenKeptOn = false;
+  late Channel _channel = widget.channel;
+  late int _group = widget.group;
+  var _panelOpen = false;
+  final _screenFocus = FocusNode(debugLabel: 'lecteur');
+
+  /// Rang de la dernière ouverture : un zap rapide abandonne celle d'avant.
+  var _attempt = 0;
+
+  bool get _canZap => widget.groups != null;
 
   /// Moteurs, dans l'ordre d'essai par défaut. Selon la puce graphique, l'un peut rester noir quand
   /// un autre affiche l'image : on en change avec Bas, et le choix vaut pour la suite de la session.
@@ -52,14 +65,59 @@ class _PlayerPageState extends State<PlayerPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // Sur un téléviseur, la vidéo occupe tout l'écran d'emblée.
       if (isTelevision) _setFullscreen(true);
-      final channel = widget.channel;
-      if (channel.isLive) {
-        final client = _library.xtreamClientForChannel(channel);
-        setState(() {
-          _guideClient = client;
-        });
-      }
-      _start(resume: _library.progress(channel)?.resumePosition);
+      _open(_channel);
+    });
+  }
+
+  void _open(Channel channel) {
+    setState(() {
+      _channel = channel;
+      _guideClient = channel.isLive ? _library.xtreamClientForChannel(channel) : null;
+    });
+    _start(resume: _library.progress(channel)?.resumePosition);
+  }
+
+  /// Passe à une autre chaîne sans quitter le lecteur.
+  void _zap(Channel channel, int group) {
+    _closePanel();
+    _group = group;
+    if (channel == _channel && _playback != null && _failure == null) return;
+    _messenger.hideCurrentSnackBar();
+    _stop();
+    _open(channel);
+  }
+
+  /// Chaîne précédente ou suivante de la catégorie (CH+ / CH− de la télécommande).
+  Future<void> _zapBy(int step) async {
+    final groups = widget.groups;
+    if (groups == null) return;
+    final channels = await groups.channels(_group).catchError((Object _) => <Channel>[]);
+    if (!mounted || channels.isEmpty) return;
+    final index = channels.indexOf(_channel);
+    _zap(channels[(index + step) % channels.length], _group);
+  }
+
+  void _openPanel() {
+    if (_canZap) setState(() => _panelOpen = true);
+  }
+
+  void _closePanel() {
+    if (!_panelOpen) return;
+    setState(() => _panelOpen = false);
+    _screenFocus.requestFocus();
+  }
+
+  /// Arrête la lecture en cours (position notée pour un film).
+  void _stop() {
+    _attempt++;
+    _recordProgress();
+    _progressTimer?.cancel();
+    final playback = _playback;
+    playback?.removeListener(_syncScreen);
+    playback?.dispose();
+    setState(() {
+      _playback = null;
+      _failure = null;
     });
   }
 
@@ -70,7 +128,8 @@ class _PlayerPageState extends State<PlayerPage> {
     });
     final start = resume == null ? null : Duration(milliseconds: (resume * 1000).round());
     Object? lastError;
-    final channel = widget.channel;
+    final channel = _channel;
+    final attempt = ++_attempt;
     for (var i = 0; i < _engines.length; i++) {
       final index = (EnginePreference.index + i) % _engines.length;
       final playback = _engines[index]();
@@ -79,7 +138,7 @@ class _PlayerPageState extends State<PlayerPage> {
         final size = playback.videoSize;
         PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : '
             'image ${size.width.round()}×${size.height.round()}');
-        if (!mounted) return playback.dispose();
+        if (!mounted || attempt != _attempt) return playback.dispose();
         _engineIndex = index;
         setState(() {
           _playback = playback;
@@ -92,9 +151,10 @@ class _PlayerPageState extends State<PlayerPage> {
         lastError = error;
         PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : échec, ${hideLinks(error)}');
         playback.dispose();
+        if (attempt != _attempt) return;
       }
     }
-    if (!mounted) return;
+    if (!mounted || attempt != _attempt) return;
     if (_playback == null) {
       setState(() {
         _loading = false;
@@ -127,7 +187,7 @@ class _PlayerPageState extends State<PlayerPage> {
     if (playback == null) return;
     EnginePreference.save((_engineIndex + 1) % _engines.length);
     PlaybackLog.add('Changement de lecteur à la main (${playback.engineName} → suivant)');
-    final position = widget.channel.isLive ? null : playback.position.inMilliseconds / 1000;
+    final position = _channel.isLive ? null : playback.position.inMilliseconds / 1000;
     _progressTimer?.cancel();
     playback.removeListener(_syncScreen);
     playback.dispose();
@@ -150,9 +210,9 @@ class _PlayerPageState extends State<PlayerPage> {
 
   void _recordProgress() {
     final playback = _playback;
-    if (playback == null || widget.channel.isLive) return;
+    if (playback == null || _channel.isLive) return;
     _library.recordProgress(
-      widget.channel,
+      _channel,
       playback.position.inMilliseconds / 1000,
       playback.duration.inMilliseconds / 1000,
     );
@@ -175,6 +235,7 @@ class _PlayerPageState extends State<PlayerPage> {
     _recordProgress();
     _progressTimer?.cancel();
     _playback?.dispose();
+    _screenFocus.dispose();
     if (_screenKeptOn) keepScreenOn(false);
     if (_fullscreen) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -186,54 +247,92 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   Widget build(BuildContext context) {
     final library = LibraryScope.of(context);
-    final isFavorite = library.isFavorite(widget.channel);
+    final channel = _channel;
+    final isFavorite = library.isFavorite(channel);
     final screen = _Screen(
+      focusNode: _screenFocus,
+      title: channel.name,
       playback: _playback,
       loading: _loading,
       failure: _failure,
-      live: widget.channel.isLive,
+      live: channel.isLive,
       fullscreen: _fullscreen,
       favorite: isFavorite,
+      canZap: _canZap,
+      panelOpen: _panelOpen,
       onRetry: _retry,
       onFullscreen: () => _setFullscreen(!_fullscreen),
-      onFavorite: () => toggleFavorite(context, widget.channel),
+      onFavorite: () => toggleFavorite(context, channel),
       onSwitchEngine: _switchEngine,
+      onOpenPanel: _openPanel,
+      onZapBy: _zapBy,
     );
     return PopScope(
-      // Le retour quitte d'abord le plein écran, sauf sur un téléviseur où il n'y a que lui.
-      canPop: !_fullscreen || isTelevision,
+      // Le retour ferme d'abord la liste des chaînes, puis quitte le plein écran,
+      // sauf sur un téléviseur où il n'y a que lui.
+      canPop: !_panelOpen && (!_fullscreen || isTelevision),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _setFullscreen(false);
+        if (didPop) return;
+        if (_panelOpen) {
+          _closePanel();
+        } else {
+          _setFullscreen(false);
+        }
       },
       child: Scaffold(
         backgroundColor: _fullscreen ? Colors.black : null,
         appBar: _fullscreen
             ? null
             : AppBar(
-                title: Text(widget.channel.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis),
                 actions: [
+                  if (_canZap)
+                    IconButton(tooltip: 'Chaînes', icon: const Icon(Icons.format_list_bulleted), onPressed: _openPanel),
                   IconButton(
                     tooltip: isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
                     icon: Icon(isFavorite ? Icons.star : Icons.star_border),
-                    onPressed: () => library.toggleFavorite(widget.channel),
+                    onPressed: () => library.toggleFavorite(channel),
                   ),
                 ],
               ),
-        body: _fullscreen
-            ? screen
-            : Column(children: [
-                AspectRatio(aspectRatio: 16 / 9, child: screen),
-                Expanded(
-                  child: _guideClient == null
-                      ? _Details(channel: widget.channel)
-                      : FutureBuilder<XtreamClient?>(
-                          future: _guideClient,
-                          builder: (context, snapshot) => snapshot.data == null
-                              ? _Details(channel: widget.channel)
-                              : GuidePanel(channel: widget.channel, client: snapshot.data!),
-                        ),
-                ),
-              ]),
+        body: Stack(fit: StackFit.expand, children: [
+          if (_fullscreen)
+            screen
+          else
+            Column(children: [
+              // Téléphone en paysage : la vidéo laisse de la place au guide au lieu de déborder.
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.6),
+                child: AspectRatio(aspectRatio: 16 / 9, child: screen),
+              ),
+              Expanded(
+                child: _guideClient == null
+                    ? _Details(channel: channel)
+                    : FutureBuilder<XtreamClient?>(
+                        key: ValueKey(channel.url),
+                        future: _guideClient,
+                        builder: (context, snapshot) => snapshot.data == null
+                            ? _Details(channel: channel)
+                            : GuidePanel(key: ValueKey(channel.url), channel: channel, client: snapshot.data!),
+                      ),
+              ),
+            ]),
+          if (_panelOpen && widget.groups != null) ...[
+            // Un appui à côté de la liste la ferme.
+            GestureDetector(behavior: HitTestBehavior.opaque, onTap: _closePanel),
+            _ChannelPanel(
+              groups: widget.groups!,
+              group: _group,
+              current: channel,
+              engineName: _playback?.engineName,
+              onPick: _zap,
+              onSwitchEngine: () {
+                _closePanel();
+                _switchEngine();
+              },
+            ),
+          ],
+        ]),
       ),
     );
   }
@@ -242,6 +341,12 @@ class _PlayerPageState extends State<PlayerPage> {
 /// La vidéo et ses commandes, identiques quel que soit le moteur.
 class _Screen extends StatefulWidget {
   const _Screen({
+    required this.focusNode,
+    required this.title,
+    required this.canZap,
+    required this.panelOpen,
+    required this.onOpenPanel,
+    required this.onZapBy,
     required this.playback,
     required this.loading,
     required this.failure,
@@ -254,6 +359,14 @@ class _Screen extends StatefulWidget {
     required this.onSwitchEngine,
   });
 
+  final FocusNode focusNode;
+  final String title;
+
+  /// Ouvert depuis une liste : OK et Bas ouvrent la liste des chaînes, CH+ / CH− zappent.
+  final bool canZap;
+  final bool panelOpen;
+  final VoidCallback onOpenPanel;
+  final void Function(int step) onZapBy;
   final Playback? playback;
   final bool loading;
   final String? failure;
@@ -292,11 +405,21 @@ class _ScreenState extends State<_Screen> {
   }
 
   @override
+  void didUpdateWidget(_Screen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Après un zap, le nom de la nouvelle chaîne s'affiche un moment.
+    if (oldWidget.title != widget.title) _showControls();
+  }
+
+  @override
   void dispose() {
     _hide?.cancel();
     _seekSettle?.cancel();
     super.dispose();
   }
+
+  /// Un film se met en pause avec OK ; une chaîne en direct ouvre la liste des chaînes.
+  bool get _seekable => !widget.live && (widget.playback?.duration ?? Duration.zero) > Duration.zero;
 
   void _scheduleHide() {
     _hide?.cancel();
@@ -319,9 +442,12 @@ class _ScreenState extends State<_Screen> {
     _scheduleHide();
   }
 
-  /// Télécommande et clavier : OK bref lit ou met en pause, OK maintenu met en favori,
-  /// gauche/droite reculent ou avancent de 10 s, haut/bas montrent les commandes.
+  /// Télécommande et clavier : OK bref lit ou met en pause (ouvre la liste des chaînes en direct),
+  /// OK maintenu met en favori, gauche/droite reculent ou avancent de 10 s, bas ouvre la liste des
+  /// chaînes (ou change de lecteur hors d'une liste), CH+ / CH− zappent, Menu change de lecteur.
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    // La liste des chaînes ouverte gère elle-même ses touches.
+    if (widget.panelOpen) return KeyEventResult.ignored;
     final key = event.logicalKey;
     final playback = widget.playback;
     if (_okKeys.contains(key)) {
@@ -338,7 +464,9 @@ class _ScreenState extends State<_Screen> {
         case KeyUpEvent():
           // Le relâchement de l'appui qui a ouvert le lecteur arrive ici : il ne compte pas.
           if (_okDown && !_okHeld) {
-            if (widget.failure != null || playback?.error != null) {
+            if (widget.canZap && !_seekable) {
+              widget.onOpenPanel();
+            } else if (widget.failure != null || playback?.error != null) {
               widget.onRetry();
             } else {
               playback?.togglePlay();
@@ -350,6 +478,23 @@ class _ScreenState extends State<_Screen> {
       return KeyEventResult.handled;
     }
     if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final zap = switch (key) {
+      LogicalKeyboardKey.channelUp || LogicalKeyboardKey.pageUp => -1,
+      LogicalKeyboardKey.channelDown || LogicalKeyboardKey.pageDown => 1,
+      _ => null,
+    };
+    if (zap != null) {
+      if (event is KeyDownEvent) widget.onZapBy(zap);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.contextMenu) {
+      if (event is KeyDownEvent && playback != null) widget.onSwitchEngine();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown && widget.canZap) {
+      if (event is KeyDownEvent) widget.onOpenPanel();
+      return KeyEventResult.handled;
+    }
     if (key == LogicalKeyboardKey.mediaPlayPause ||
         (key == LogicalKeyboardKey.mediaPlay && !(playback?.playing ?? true)) ||
         (key == LogicalKeyboardKey.mediaPause && (playback?.playing ?? false))) {
@@ -369,7 +514,7 @@ class _ScreenState extends State<_Screen> {
       _showControls();
       return KeyEventResult.handled;
     }
-    // Bas : changer de moteur (ExoPlayer ↔ mpv). À la télécommande, à tout moment : sur une image noire,
+    // Hors d'une liste, Bas change de moteur. À la télécommande, à tout moment : sur une image noire,
     // on ne voit pas toujours les commandes. Au toucher, seulement quand elles sont affichées.
     if (key == LogicalKeyboardKey.arrowDown && (_controlsVisible || isTelevision) && event is KeyDownEvent && playback != null) {
       widget.onSwitchEngine();
@@ -398,7 +543,8 @@ class _ScreenState extends State<_Screen> {
   }
 
   @override
-  Widget build(BuildContext context) => Focus(autofocus: true, onKeyEvent: _onKey, child: _video(context));
+  Widget build(BuildContext context) =>
+      Focus(focusNode: widget.focusNode, autofocus: true, onKeyEvent: _onKey, child: _video(context));
 
   Widget _video(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -484,7 +630,16 @@ class _ScreenState extends State<_Screen> {
         ] else ...[
           const SizedBox(width: 4),
           const Text('DIRECT', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
-          const Spacer(),
+          if (widget.fullscreen) ...[
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(widget.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+            ),
+          ] else
+            const Spacer(),
         ],
         // Moteur en cours : un appui (ou Bas à la télécommande) passe à l'autre.
         GestureDetector(
@@ -496,12 +651,18 @@ class _ScreenState extends State<_Screen> {
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               const Icon(Icons.swap_horiz, size: 14, color: Colors.white),
               const SizedBox(width: 4),
-              Text(isTelevision ? '${playback.engineName} · Bas : changer' : playback.engineName,
+              Text(isTelevision && !widget.canZap ? '${playback.engineName} · Bas : changer' : playback.engineName,
                   style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
             ]),
           ),
         ),
         if (isTelevision) ...[
+          if (widget.canZap) ...[
+            const SizedBox(width: 12),
+            const Icon(Icons.format_list_bulleted, size: 18, color: Colors.white70),
+            const SizedBox(width: 6),
+            Text(_seekable ? 'Bas : liste' : 'OK : chaînes', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+          ],
           const SizedBox(width: 12),
           Icon(widget.favorite ? Icons.star : Icons.star_border,
               size: 18, color: widget.favorite ? const Color(0xFFF7C948) : Colors.white70),
@@ -516,6 +677,221 @@ class _ScreenState extends State<_Screen> {
             onPressed: widget.onFullscreen,
           ),
       ]),
+    );
+  }
+}
+
+/// Liste des chaînes par-dessus la vidéo : Haut/Bas pour choisir, OK pour zapper,
+/// Gauche/Droite pour changer de catégorie, Retour pour fermer.
+class _ChannelPanel extends StatefulWidget {
+  const _ChannelPanel({
+    required this.groups,
+    required this.group,
+    required this.current,
+    required this.engineName,
+    required this.onPick,
+    required this.onSwitchEngine,
+  });
+
+  final ChannelGroups groups;
+  final int group;
+  final Channel current;
+  final String? engineName;
+  final void Function(Channel channel, int group) onPick;
+  final VoidCallback onSwitchEngine;
+
+  @override
+  State<_ChannelPanel> createState() => _ChannelPanelState();
+}
+
+class _ChannelPanelState extends State<_ChannelPanel> {
+  late var _group = widget.group;
+
+  void _changeGroup(int step) {
+    final count = widget.groups.names.length;
+    if (count > 1) setState(() => _group = (_group + step) % count);
+  }
+
+  KeyEventResult _onKey(FocusNode _, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final step = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowLeft => -1,
+      LogicalKeyboardKey.arrowRight => 1,
+      _ => null,
+    };
+    if (step == null) return KeyEventResult.ignored;
+    _changeGroup(step);
+    return KeyEventResult.handled;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final several = widget.groups.names.length > 1;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: _onKey,
+        child: Material(
+          color: const Color(0xF20C1322),
+          child: SizedBox(
+            width: screenWidth < 600 ? screenWidth * 0.86 : (screenWidth * 0.4).clamp(360, 520),
+            child: SafeArea(
+              right: false,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+                  child: Row(children: [
+                    if (several)
+                      IconButton(
+                        tooltip: 'Catégorie précédente',
+                        icon: const Icon(Icons.chevron_left),
+                        onPressed: () => _changeGroup(-1),
+                      ),
+                    Expanded(
+                      child: Text(widget.groups.names[_group],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: several ? TextAlign.center : TextAlign.start,
+                          style: Theme.of(context).textTheme.titleMedium),
+                    ),
+                    if (several)
+                      IconButton(
+                        tooltip: 'Catégorie suivante',
+                        icon: const Icon(Icons.chevron_right),
+                        onPressed: () => _changeGroup(1),
+                      ),
+                  ]),
+                ),
+                if (isTelevision)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                    child: Text(
+                      several ? 'Gauche / Droite : catégorie · Retour : fermer' : 'Retour : fermer',
+                      textAlign: several ? TextAlign.center : TextAlign.start,
+                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                if (isTelevision && widget.engineName != null)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.swap_horiz, size: 20),
+                    title: Text('Lecteur : ${widget.engineName}'),
+                    subtitle: const Text('Image noire ? OK pour en essayer un autre'),
+                    onTap: widget.onSwitchEngine,
+                  ),
+                const Divider(height: 1),
+                Expanded(
+                  child: FutureBuilder<List<Channel>>(
+                    key: ValueKey(_group),
+                    future: widget.groups.channels(_group),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return ListView(children: [FailureRow(message: '${snapshot.error}', onRetry: () => setState(() {}))]);
+                      }
+                      final channels = snapshot.data;
+                      if (channels == null) return ListView(children: const [LoadingRow(text: 'Chargement…')]);
+                      if (channels.isEmpty) return ListView(children: const [ListTile(title: Text('Catégorie vide.'))]);
+                      return _ChannelColumn(
+                        key: ValueKey(_group),
+                        channels: channels,
+                        current: widget.current,
+                        onPick: (channel) => widget.onPick(channel, _group),
+                      );
+                    },
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Les chaînes d'une catégorie, la chaîne en cours sélectionnée et visible dès l'ouverture.
+class _ChannelColumn extends StatefulWidget {
+  const _ChannelColumn({super.key, required this.channels, required this.current, required this.onPick});
+  final List<Channel> channels;
+  final Channel current;
+  final ValueChanged<Channel> onPick;
+
+  @override
+  State<_ChannelColumn> createState() => _ChannelColumnState();
+}
+
+class _ChannelColumnState extends State<_ChannelColumn> {
+  static const _rowHeight = 60.0;
+  late final int _focused = widget.channels.indexOf(widget.current).clamp(0, widget.channels.length - 1);
+  late int _position = _focused;
+  late final _scroll = ScrollController(initialScrollOffset: (_focused - 3).clamp(0, 1 << 20) * _rowHeight);
+  final _focusedNode = FocusNode(debugLabel: 'chaîne en cours');
+
+  @override
+  void initState() {
+    super.initState();
+    // autofocus ne suffit pas : la vidéo garde le focus tant qu'on ne le lui retire pas.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusedNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    _focusedNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 20, 2),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: ListHeaderCount(position: _position, count: widget.channels.length),
+        ),
+      ),
+      Expanded(
+        child: Scrollbar(
+          controller: _scroll,
+          thumbVisibility: true,
+          thickness: 6,
+          radius: const Radius.circular(3),
+          child: _list(scheme),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _list(ColorScheme scheme) {
+    return ListView.builder(
+      controller: _scroll,
+      itemExtent: _rowHeight,
+      padding: const EdgeInsets.only(right: 10),
+      itemCount: widget.channels.length,
+      itemBuilder: (context, index) {
+        final channel = widget.channels[index];
+        final playing = channel == widget.current;
+        return ListTile(
+          onFocusChange: (focused) {
+            if (focused && _position != index) setState(() => _position = index);
+          },
+          focusNode: index == _focused ? _focusedNode : null,
+          leading: ChannelLogo(url: channel.logoUrl, name: channel.name, width: 48, height: 32),
+          title: Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: playing ? Icon(Icons.play_arrow, size: 18, color: scheme.primary) : null,
+          selected: playing,
+          selectedColor: scheme.primary,
+          onTap: () => widget.onPick(channel),
+        );
+      },
     );
   }
 }

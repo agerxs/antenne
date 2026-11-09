@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models.dart';
+import 'channel_groups.dart';
 import 'library_scope.dart';
 import 'player_page.dart';
 
@@ -75,8 +76,12 @@ class ProgressBadge extends StatelessWidget {
 
 /// Ligne d'une chaîne, d'un film ou d'un épisode : ouvre le lecteur, appui long pour les favoris.
 class ChannelTile extends StatelessWidget {
-  const ChannelTile({super.key, required this.channel, this.subtitle});
+  const ChannelTile({super.key, required this.channel, this.subtitle, this.groups, this.group = 0});
   final Channel channel;
+
+  /// La liste d'où vient la chaîne et le rang de sa catégorie : le lecteur y zappe sans revenir ici.
+  final ChannelGroups? groups;
+  final int group;
 
   /// Remplace le groupe sous le nom (l'émission en cours d'une chaîne en direct, par exemple).
   final String? subtitle;
@@ -96,7 +101,7 @@ class ChannelTile extends StatelessWidget {
               if (progress != null) Padding(padding: const EdgeInsets.only(top: 6), child: ProgressBadge(progress: progress)),
             ]),
       trailing: library.isFavorite(channel) ? const Icon(Icons.star, size: 18, color: Color(0xFFF7C948)) : null,
-      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlayerPage(channel: channel))),
+      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlayerPage(channel: channel, groups: groups, group: group))),
       onLongPress: () => toggleFavorite(context, channel),
     );
   }
