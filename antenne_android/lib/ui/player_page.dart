@@ -13,13 +13,54 @@ import 'library_scope.dart';
 import 'playback.dart';
 import 'widgets.dart';
 
+/// Moteurs, dans l'ordre d'essai par défaut. Selon la puce graphique, l'un peut rester noir quand
+/// un autre affiche l'image : on en change avec Bas, et le choix vaut pour la suite.
+/// La texture d'abord : elle marche sur la plupart des appareils. La surface sauve les box à puce
+/// graphique ancienne, mpv les formats qu'Android ne décode pas.
+final playbackEngines = <Playback Function()>[ExoPlayback.texture, ExoPlayback.surface, MpvPlayback.new];
+
+/// Une lecture qui a démarré, et le rang de son moteur dans [playbackEngines].
+typedef OpenedPlayback = ({Playback playback, int engine});
+
+/// Ouvre une chaîne avec le premier moteur qui affiche l'image, en partant du moteur préféré.
+/// Rend null si l'ouverture n'est plus voulue en route ([wanted] devient faux) : rien ne reste ouvert.
+/// Chaque essai est noté dans le journal de lecture.
+Future<OpenedPlayback?> openPlayback(Channel channel, {Duration? start, required bool Function() wanted}) async {
+  Object? lastError;
+  for (var i = 0; i < playbackEngines.length; i++) {
+    final index = (EnginePreference.index + i) % playbackEngines.length;
+    final playback = playbackEngines[index]();
+    try {
+      await playback.open(channel, start: start);
+      final size = playback.videoSize;
+      PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : '
+          'image ${size.width.round()}×${size.height.round()}');
+      if (!wanted()) {
+        playback.dispose();
+        return null;
+      }
+      return (playback: playback, engine: index);
+    } catch (error) {
+      lastError = error;
+      PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : échec, ${hideLinks(error)}');
+      playback.dispose();
+      if (!wanted()) return null;
+    }
+  }
+  throw lastError ?? StateError('Aucun lecteur disponible.');
+}
+
 /// Lecture d'une chaîne, d'un film ou d'un épisode : ExoPlayer d'abord, mpv s'il échoue.
 /// Ouvert depuis une liste, il garde ses voisines : on zappe et on change de catégorie sans en sortir.
 class PlayerPage extends StatefulWidget {
-  const PlayerPage({super.key, required this.channel, this.groups, this.group = 0});
+  const PlayerPage({super.key, required this.channel, this.groups, this.group = 0, this.opened});
   final Channel channel;
   final ChannelGroups? groups;
   final int group;
+
+  /// La lecture de l'aperçu, reprise telle quelle : pas de nouvelle connexion au fournisseur,
+  /// ce qui compte pour un abonnement limité à un écran.
+  final OpenedPlayback? opened;
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -46,11 +87,6 @@ class _PlayerPageState extends State<PlayerPage> {
 
   bool get _canZap => widget.groups != null;
 
-  /// Moteurs, dans l'ordre d'essai par défaut. Selon la puce graphique, l'un peut rester noir quand
-  /// un autre affiche l'image : on en change avec Bas, et le choix vaut pour la suite de la session.
-  /// La texture d'abord : elle marche sur la plupart des appareils. La surface sauve les box à puce
-  /// graphique ancienne, mpv les formats qu'Android ne décode pas.
-  static final _engines = <Playback Function()>[ExoPlayback.texture, ExoPlayback.surface, MpvPlayback.new];
   var _engineIndex = 0;
 
   @override
@@ -65,16 +101,35 @@ class _PlayerPageState extends State<PlayerPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // Sur un téléviseur, la vidéo occupe tout l'écran d'emblée.
       if (isTelevision) _setFullscreen(true);
-      _open(_channel);
+      _open(_channel, opened: widget.opened);
     });
   }
 
-  void _open(Channel channel) {
+  void _open(Channel channel, {OpenedPlayback? opened}) {
     setState(() {
       _channel = channel;
       _guideClient = channel.isLive ? _library.xtreamClientForChannel(channel) : null;
     });
-    _start(resume: _library.progress(channel)?.resumePosition);
+    if (opened != null) {
+      _attempt++;
+      _adopt(opened);
+    } else {
+      _start(resume: _library.progress(channel)?.resumePosition);
+    }
+  }
+
+  void _adopt(OpenedPlayback opened) {
+    _engineIndex = opened.engine;
+    setState(() {
+      _playback = opened.playback;
+      _loading = false;
+      _failure = null;
+    });
+    opened.playback.addListener(_syncScreen);
+    _syncScreen();
+    // Position notée régulièrement : la reprise marche même après une fermeture brutale.
+    _progressTimer?.cancel();
+    _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) => _recordProgress());
   }
 
   /// Passe à une autre chaîne sans quitter le lecteur.
@@ -127,43 +182,19 @@ class _PlayerPageState extends State<PlayerPage> {
       _failure = null;
     });
     final start = resume == null ? null : Duration(milliseconds: (resume * 1000).round());
-    Object? lastError;
-    final channel = _channel;
     final attempt = ++_attempt;
-    for (var i = 0; i < _engines.length; i++) {
-      final index = (EnginePreference.index + i) % _engines.length;
-      final playback = _engines[index]();
-      try {
-        await playback.open(channel, start: start);
-        final size = playback.videoSize;
-        PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : '
-            'image ${size.width.round()}×${size.height.round()}');
-        if (!mounted || attempt != _attempt) return playback.dispose();
-        _engineIndex = index;
-        setState(() {
-          _playback = playback;
-          _loading = false;
-        });
-        playback.addListener(_syncScreen);
-        _syncScreen();
-        break;
-      } catch (error) {
-        lastError = error;
-        PlaybackLog.add('${channel.name} · ${streamFormat(channel)} · ${playback.engineName} : échec, ${hideLinks(error)}');
-        playback.dispose();
-        if (attempt != _attempt) return;
-      }
-    }
-    if (!mounted || attempt != _attempt) return;
-    if (_playback == null) {
+    try {
+      final opened = await openPlayback(_channel, start: start, wanted: () => mounted && attempt == _attempt);
+      if (opened == null) return;
+      _adopt(opened);
+    } catch (error) {
+      if (!mounted || attempt != _attempt) return;
       setState(() {
         _loading = false;
-        _failure = '$lastError';
+        _failure = '$error';
       });
       return;
     }
-    // Position notée régulièrement : la reprise marche même après une fermeture brutale.
-    _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) => _recordProgress());
     if (resume != null) {
       _messenger.showSnackBar(SnackBar(
         content: Text('Reprise à ${timecode(resume)}'),
@@ -185,7 +216,7 @@ class _PlayerPageState extends State<PlayerPage> {
   Future<void> _switchEngine() async {
     final playback = _playback;
     if (playback == null) return;
-    EnginePreference.save((_engineIndex + 1) % _engines.length);
+    EnginePreference.save((_engineIndex + 1) % playbackEngines.length);
     PlaybackLog.add('Changement de lecteur à la main (${playback.engineName} → suivant)');
     final position = _channel.isLive ? null : playback.position.inMilliseconds / 1000;
     _progressTimer?.cancel();

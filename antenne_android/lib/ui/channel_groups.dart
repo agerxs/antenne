@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/models.dart';
+import 'channel_preview.dart';
 import 'device.dart';
 import 'widgets.dart';
 
@@ -16,7 +17,10 @@ class ChannelGroups {
   /// Une liste déjà en mémoire : « Toutes les chaînes » en tête, puis ses groupes dans l'ordre d'apparition.
   /// Sans groupes, un seul, nommé [title].
   factory ChannelGroups.fromList(List<Channel> channels, {String title = 'Toutes les chaînes'}) {
-    final groups = {for (final c in channels) if (c.group != null) c.group!}.toList();
+    final groups = {
+      for (final c in channels)
+        if (c.group != null) c.group!,
+    }.toList();
     if (groups.length <= 1) return ChannelGroups(names: [title], load: (_) async => channels);
     return ChannelGroups(
       names: ['Toutes les chaînes', ...groups],
@@ -30,9 +34,9 @@ class ChannelGroups {
 
   /// Les chaînes d'un groupe. Un échec n'est pas gardé : le prochain appel réessaie.
   Future<List<Channel>> channels(int index) => _cache[index] ??= _load(index).catchError((Object error) {
-        _cache.remove(index);
-        throw error;
-      });
+    _cache.remove(index);
+    throw error;
+  });
 }
 
 /// À partir de quelle largeur la liste passe en deux colonnes (catégories à gauche, chaînes à droite).
@@ -42,8 +46,21 @@ bool wideLayout(BuildContext context) => isTelevision || MediaQuery.sizeOf(conte
 /// d'une catégorie à l'autre sans revenir en arrière. La catégorie suit la sélection, Droite entre dans
 /// ses chaînes, Gauche ou Retour en ressortent. Une barre et un compteur disent où l'on est dans la liste.
 class GroupedChannelBrowser extends StatefulWidget {
-  const GroupedChannelBrowser({super.key, required this.groups, required this.tile, this.query = ''});
+  const GroupedChannelBrowser({
+    super.key,
+    required this.groups,
+    required this.tile,
+    this.query = '',
+    this.preview = false,
+    this.previewDetails,
+  });
   final ChannelGroups groups;
+
+  /// Aperçu de la chaîne sélectionnée dans une troisième colonne (le direct, si l'écran est assez large).
+  final bool preview;
+
+  /// Sous l'aperçu : le programme de la chaîne, par exemple.
+  final Widget Function(Channel channel)? previewDetails;
 
   /// La ligne d'une chaîne, avec le rang de sa catégorie (pour que le lecteur y retrouve ses voisines).
   final Widget Function(Channel channel, int group) tile;
@@ -60,6 +77,7 @@ class _GroupedChannelBrowserState extends State<GroupedChannelBrowser> {
   Timer? _follow;
   final _nodes = <int, FocusNode>{};
   final _channelsScroll = ScrollController();
+  final _preview = ChannelPreview();
 
   /// La sélection est dans les chaînes : Retour ramène aux catégories au lieu de quitter l'écran.
   var _inChannels = false;
@@ -79,10 +97,18 @@ class _GroupedChannelBrowserState extends State<GroupedChannelBrowser> {
   void dispose() {
     _follow?.cancel();
     _channelsScroll.dispose();
+    _preview.dispose();
     for (final node in _nodes.values) {
       node.dispose();
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Liste cachée (un autre écran par-dessus, un autre onglet) : l'aperçu s'arrête, plus de son.
+    if (!TickerMode.of(context)) _preview.stop();
   }
 
   void _select(int index) {
@@ -119,95 +145,128 @@ class _GroupedChannelBrowserState extends State<GroupedChannelBrowser> {
     ];
     final groupMatches = query.isNotEmpty && names[_selected].toLowerCase().contains(query);
 
-    return PopScope(
-      canPop: !_inChannels,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _backToGroups();
-      },
-      child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      SizedBox(
-        width: 300,
-        child: ListView.builder(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: visible.length,
-          itemBuilder: (context, k) {
-            final index = visible[k];
-            final selected = index == _selected;
-            return ListTile(
-              // À l'arrivée, la télécommande part de la catégorie ouverte.
-              autofocus: selected,
-              focusNode: _node(index),
-              selected: selected,
-              selectedColor: scheme.onSurface,
-              selectedTileColor: scheme.surfaceContainerHigh,
-              title: Text(names[index], maxLines: 1, overflow: TextOverflow.ellipsis),
-              trailing: selected ? Icon(Icons.chevron_right, color: scheme.primary) : null,
-              // La catégorie suit la sélection après un court instant : traverser la liste ne charge pas tout.
-              onFocusChange: (focused) {
-                if (!focused) return;
-                _follow?.cancel();
-                _follow = Timer(const Duration(milliseconds: 350), () {
-                  if (mounted) _select(index);
-                });
-              },
-              onTap: () => _select(index),
-            );
+    final withPreview = widget.preview && MediaQuery.sizeOf(context).width >= 900;
+    return ChannelPreviewScope(
+      preview: _preview,
+      // La sélection quitte la liste (vers les onglets, la recherche) : l'aperçu se tait.
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onFocusChange: (inside) {
+          if (!inside) _preview.stop();
+        },
+        child: PopScope(
+          canPop: !_inChannels,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _backToGroups();
           },
-        ),
-      ),
-      VerticalDivider(width: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
-      Expanded(
-        child: Focus(
-          canRequestFocus: false,
-          skipTraversal: true,
-          onKeyEvent: _onChannelsKey,
-          onFocusChange: (inside) => setState(() => _inChannels = inside),
-          child: FutureBuilder<List<Channel>>(
-            key: ValueKey(_selected),
-            future: widget.groups.channels(_selected),
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return ListView(children: [FailureRow(message: '${snapshot.error}', onRetry: () => setState(() {}))]);
-              }
-              final channels = snapshot.data;
-              if (channels == null) return ListView(children: const [LoadingRow(text: 'Chargement…')]);
-              final shown = query.isEmpty || groupMatches
-                  ? channels
-                  : channels.where((c) => c.name.toLowerCase().contains(query)).toList();
-              if (shown.isEmpty) {
-                return ListView(children: [
-                  ListTile(title: Text(channels.isEmpty ? 'Catégorie vide.' : 'Aucune chaîne ne correspond dans cette catégorie.')),
-                ]);
-              }
-              return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                _ListHeader(title: names[_selected], position: _position, count: shown.length),
-                Expanded(
-                  child: Scrollbar(
-                    controller: _channelsScroll,
-                    thumbVisibility: true,
-                    thickness: 6,
-                    radius: const Radius.circular(3),
-                    child: ListView.builder(
-                      controller: _channelsScroll,
-                      padding: const EdgeInsets.only(bottom: 8, right: 12),
-                      itemCount: shown.length,
-                      itemBuilder: (_, index) => Focus(
-                        canRequestFocus: false,
-                        skipTraversal: true,
-                        onFocusChange: (focused) {
-                          if (focused && _position != index) setState(() => _position = index);
-                        },
-                        child: widget.tile(shown[index], _selected),
-                      ),
-                    ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                width: withPreview ? 240 : 300,
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: visible.length,
+                  itemBuilder: (context, k) {
+                    final index = visible[k];
+                    final selected = index == _selected;
+                    return ListTile(
+                      // À l'arrivée, la télécommande part de la catégorie ouverte.
+                      autofocus: selected,
+                      focusNode: _node(index),
+                      selected: selected,
+                      selectedColor: scheme.onSurface,
+                      selectedTileColor: scheme.surfaceContainerHigh,
+                      title: Text(names[index], maxLines: 1, overflow: TextOverflow.ellipsis),
+                      trailing: selected ? Icon(Icons.chevron_right, color: scheme.primary) : null,
+                      // La catégorie suit la sélection après un court instant : traverser la liste ne charge pas tout.
+                      onFocusChange: (focused) {
+                        if (!focused) return;
+                        _follow?.cancel();
+                        _follow = Timer(const Duration(milliseconds: 350), () {
+                          if (mounted) _select(index);
+                        });
+                      },
+                      onTap: () => _select(index),
+                    );
+                  },
+                ),
+              ),
+              VerticalDivider(width: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
+              Expanded(
+                child: Focus(
+                  canRequestFocus: false,
+                  skipTraversal: true,
+                  onKeyEvent: _onChannelsKey,
+                  onFocusChange: (inside) => setState(() => _inChannels = inside),
+                  child: FutureBuilder<List<Channel>>(
+                    key: ValueKey(_selected),
+                    future: widget.groups.channels(_selected),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return ListView(
+                          children: [FailureRow(message: '${snapshot.error}', onRetry: () => setState(() {}))],
+                        );
+                      }
+                      final channels = snapshot.data;
+                      if (channels == null) return ListView(children: const [LoadingRow(text: 'Chargement…')]);
+                      final shown = query.isEmpty || groupMatches
+                          ? channels
+                          : channels.where((c) => c.name.toLowerCase().contains(query)).toList();
+                      if (shown.isEmpty) {
+                        return ListView(
+                          children: [
+                            ListTile(
+                              title: Text(
+                                channels.isEmpty ? 'Catégorie vide.' : 'Aucune chaîne ne correspond dans cette catégorie.',
+                              ),
+                            ),
+                          ],
+                        );
+                      }
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _ListHeader(title: names[_selected], position: _position, count: shown.length),
+                          Expanded(
+                            child: Scrollbar(
+                              controller: _channelsScroll,
+                              thumbVisibility: true,
+                              thickness: 6,
+                              radius: const Radius.circular(3),
+                              child: ListView.builder(
+                                controller: _channelsScroll,
+                                padding: const EdgeInsets.only(bottom: 8, right: 12),
+                                itemCount: shown.length,
+                                itemBuilder: (_, index) => Focus(
+                                  canRequestFocus: false,
+                                  skipTraversal: true,
+                                  onFocusChange: (focused) {
+                                    if (focused && _position != index) setState(() => _position = index);
+                                  },
+                                  child: widget.tile(shown[index], _selected),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ),
-              ]);
-            },
+              ),
+              if (withPreview) ...[
+                VerticalDivider(width: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
+                SizedBox(
+                  width: (MediaQuery.sizeOf(context).width * 0.4).clamp(320, 640),
+                  child: ChannelPreviewPane(preview: _preview, details: widget.previewDetails),
+                ),
+              ],
+            ],
           ),
         ),
       ),
-    ]),
     );
   }
 }
@@ -220,13 +279,13 @@ class ListHeaderCount extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Text(
-        position == null ? '$count chaîne${count > 1 ? 's' : ''}' : '${position! + 1} / $count',
-        style: TextStyle(
-          fontSize: 13,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-          fontFeatures: const [FontFeature.tabularFigures()],
-        ),
-      );
+    position == null ? '$count chaîne${count > 1 ? 's' : ''}' : '${position! + 1} / $count',
+    style: TextStyle(
+      fontSize: 13,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    ),
+  );
 }
 
 class _ListHeader extends StatelessWidget {
@@ -237,15 +296,19 @@ class _ListHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 24, 6),
-        child: Row(children: [
-          Expanded(
-            child: Text(title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Theme.of(context).colorScheme.primary)),
+    padding: const EdgeInsets.fromLTRB(16, 12, 24, 6),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Theme.of(context).colorScheme.primary),
           ),
-          ListHeaderCount(position: position, count: count),
-        ]),
-      );
+        ),
+        ListHeaderCount(position: position, count: count),
+      ],
+    ),
+  );
 }

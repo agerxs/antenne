@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/models.dart';
 import 'channel_groups.dart';
+import 'channel_preview.dart';
 import 'library_scope.dart';
 import 'player_page.dart';
 
@@ -101,7 +102,16 @@ class ChannelTile extends StatelessWidget {
               if (progress != null) Padding(padding: const EdgeInsets.only(top: 6), child: ProgressBadge(progress: progress)),
             ]),
       trailing: library.isFavorite(channel) ? const Icon(Icons.star, size: 18, color: Color(0xFFF7C948)) : null,
-      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PlayerPage(channel: channel, groups: groups, group: group))),
+      // Dans une liste avec aperçu, la sélection le lance, et OK reprend sa lecture en plein écran.
+      onFocusChange: (focused) {
+        if (focused) ChannelPreview.maybeOf(context)?.show(channel);
+      },
+      onTap: () {
+        final opened = ChannelPreview.maybeOf(context)?.take(channel);
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => PlayerPage(channel: channel, groups: groups, group: group, opened: opened),
+        ));
+      },
       onLongPress: () => toggleFavorite(context, channel),
     );
   }

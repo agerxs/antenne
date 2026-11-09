@@ -102,6 +102,7 @@ class _ChannelListPageState extends State<ChannelListPage> {
           ? GroupedChannelBrowser(
               groups: _channelGroups,
               query: query,
+              preview: true,
               tile: (channel, group) => ChannelTile(channel: channel, groups: _channelGroups, group: group),
             )
           : visible.isEmpty

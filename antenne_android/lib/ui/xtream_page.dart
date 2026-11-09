@@ -4,6 +4,7 @@ import '../core/models.dart';
 import '../core/xtream.dart';
 import 'channel_groups.dart';
 import 'library_scope.dart';
+import 'player_page.dart';
 import 'series_page.dart';
 import 'widgets.dart';
 
@@ -237,6 +238,8 @@ class _CategoryListState extends State<_CategoryList> with AutomaticKeepAliveCli
             return GroupedChannelBrowser(
               groups: groups,
               query: widget.query,
+              preview: widget.kind == ContentKind.live,
+              previewDetails: (channel) => GuidePanel(channel: channel, client: widget.client),
               tile: (channel, group) => _tile(channel, groups, group),
             );
           }
